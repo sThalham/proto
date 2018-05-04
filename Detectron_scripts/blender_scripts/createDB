@@ -1,0 +1,776 @@
+import os
+import bpy
+import bmesh
+import mathutils
+import math
+import sys
+import numpy as np
+import cv2
+
+from os import listdir
+from os.path import isfile, join
+from mathutils import Vector
+from mathutils import Matrix
+from mathutils.bvhtree import BVHTree
+from bpy_extras.object_utils import world_to_camera_view
+from bpy_extras.view3d_utils import location_3d_to_region_2d
+
+sys.path.append('/usr/lib/python2.7/dist-package')
+import PIL
+from PIL import Image
+
+sys.path.append('/home/sthalham/prototyping/py_module')
+import io_points_pcd
+
+#bpy.utils.register_class(io_points_pcd.ExportPCD)
+
+#######################################################################
+#                              Parameters                             #
+#######################################################################
+
+bpy.context.scene.render.engine = 'CYCLES'
+
+views = 20        # argument
+lights = 2         # argument
+upperHemi = False   # argument
+
+
+targetRepo = '/home/sthalham/prototyping/rendered'
+
+res_x = 2048     # argument
+res_y = res_x     # argument
+
+bg_img = bpy.data.images.load(bgi_name)
+
+piX_step = 1/res_x
+piY_step = 1/res_y
+
+my_pi = 3.14159265
+
+upperHemi = False
+camRadius = 10   # automatic determination
+
+
+#######################################################################
+#                              Functions                              #
+#######################################################################
+
+# Create a BVH tree and return bvh and vertices in world coordinates 
+def BVHTreeAndVerticesInWorldFromObj( obj ):
+    mWorld = obj.matrix_world
+    vertsInWorld = [mWorld * v.co for v in obj.data.vertices]
+
+    bvh = BVHTree.FromPolygons( vertsInWorld, [p.vertices for p in obj.data.polygons] )
+
+    return bvh, vertsInWorld
+
+# Deselect mesh polygons and vertices
+def DeselectEdgesAndPolygons( obj ):
+    for p in obj.data.polygons:
+        p.select = False
+    for e in obj.data.edges:
+        e.select = False
+
+def look_at(obj_camera, point):
+    print('rotate camera to object')
+    loc_camera = obj_camera.matrix_world.to_translation()
+
+    direction = point - obj_camera.location
+
+    # point the cameras '-Z' and use its 'Y' as up
+    rot_quat = direction.to_track_quat('-Z', 'Y')
+
+    # assume we're using euler rotation
+    obj_camera.rotation_euler = rot_quat.to_euler()
+    
+
+pcd_header = '''VERSION 0.7
+FIELDS x y z rgb
+SIZE 4 4 4 4
+TYPE F F F F
+COUNT 1 1 1 1
+WIDTH 640
+HEIGHT 480
+VIEWPOINT 0 0 0 1 0 0 0
+POINTS 307200
+DATA ascii
+'''
+    
+def write_pcd(fn, depth, fx, fy ):    
+    constant = 1.0 / 755.16;
+    centerX = res_x * 0.5;
+    centerY = res_y * 0.5;
+    Q = np.float32([[1, 0, 0,  -centerX],
+                    [0, 1, 0,  -centerY], 
+                    [0, 0, 0,   752.9], 
+                    [0, 0, 1/80,      80/80]])
+    #points = cv2.reprojectImageTo3D(disparity, Q)
+    points = np.zeros((res_y, res_x, 3))
+    
+    single_color = np.zeros((1),dtype=np.uint8)
+    colors = np.zeros((points.shape[0],points.shape[1]),dtype=np.uint32)
+    single_color[0] = 128
+    
+    print('max depth: ', np.amax(np.amax(depth)))
+
+    for i in np.arange(points.shape[0]):  #i=v
+        for j in np.arange(points.shape[1]): #j=u
+            #print('d: ', depth[i,j])
+            if(depth[i,j] > 0 and depth[i,j]<1.5):
+                points[i,j,0] = (j-centerY)*depth[i,j] * constant #offset of the left camera
+                points[i,j,1] = (i-centerX)*depth[i,j] * constant
+                points[i,j,2] = depth[i,j] 
+                colors[i,j] = ( single_color[0] << 16) | (single_color[0] << 8) | (single_color[0] << 0)
+            else:
+                points[i,j,0] = 'nan'
+                points[i,j,1] = 'nan'
+                points[i,j,2] = 'nan'
+    colors.dtype = np.float32
+    verts = points[:]
+    print('vertshape: ', verts[0,0,:])
+    
+    
+    verts = verts.reshape(-1, 3)
+    print('vertshape: ', verts[0,:])
+    colors = colors.reshape(-1, 1)
+    verts = np.hstack([verts, colors])    
+    #print (verts[640*(256-1)+320])  #256,320
+    with open(fn, 'wb') as f:
+        #print(f)
+        f.write(pcd_header.encode('utf-8'))
+        np.savetxt(f, verts, fmt='%f %f %f %1.7e ')
+
+def add_background(filepath):
+    
+    print('adding background')
+    img = bpy.data.images.load(filepath)
+    
+    #img.filepath_raw = targetRepo + '/image00001.png'
+    #img.file_format = 'PNG'
+    #img.save()
+
+    rv3d = None
+    for area in bpy.context.screen.areas:
+        if area.type == 'VIEW_3D':
+            
+        #override = bpy.context.copy()
+        #override['area'] = area
+        #bpy.ops.view3d.background_image_add(override, name="BG", filepath=filepath)
+            space_data = area.spaces.active
+
+            rv3d = space_data.region_3d # Reference 3D view region
+            space_data.show_background_images = True # Show BG images
+
+            bg = space_data.background_images.new()
+            bg.image = img
+        break
+
+    #cam = bpy.data.cameras.new("Camera")
+    #cam_ob = bpy.data.objects.new("Camera", cam)
+    #bpy.context.scene.camera = cam_object
+    #bpy.context.scene.objects.link(cam_object)
+    #bpy.context.scene.objects.active = bpy.context.scene.objects["Camera"]
+
+    #space_data.region_3d.view_perspective = 'CAMERA'
+    
+def create_Vertices (name, verts):
+    # Create mesh and object
+    me = bpy.data.meshes.new(name+'Mesh')
+    ob = bpy.data.objects.new(name, me)
+    ob.show_name = True
+    # Link object to scene
+    bpy.context.scene.objects.link(ob)
+    me.from_pydata(verts, [], [])
+    # Update mesh with new data
+    me.update()
+    return ob
+
+def export_png (name, arr ):
+    
+    im = Image.fromarray(arr.astype(np.uint8))
+    im.save(name)
+
+        
+#######################################################################
+#                              Main                                   #
+#######################################################################
+
+initObj = list(bpy.data.objects)
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+
+mypath = "/home/sthalham/data/CADdetPL/raw"
+
+for f in listdir(mypath) if isfile(join(mypath, f)):
+    bpy.ops.import_mesh.stl(filepath=f, filter_glob="*.stl", directory=mypath)    
+
+#filepathobj = directoryobj + "/" + fileobj
+#bpy.ops.import_mesh.stl(filepath=filepathobj, filter_glob="*.stl", files=[{"name":fileobj}], directory=directoryobj)
+
+#todo: move object to middle
+
+imported = bpy.context.selected_objects[0]
+object = bpy.data.objects[imported.name]
+
+bpy.ops.object.mode_set( mode = 'OBJECT' ) # Make sure we're in object mode
+bpy.ops.object.origin_set( type = 'ORIGIN_GEOMETRY' ) # Move object origin to center of geometry
+bpy.ops.object.location_clear() # Clear location - set location to (0,0,0)
+
+scene = bpy.context.scene
+scene.render.resolution_x = res_x
+scene.render.resolution_y = res_y
+
+scene.world.use_nodes = True
+
+#####################
+# define background
+######################
+
+#select world node tree
+#wd = scene.world
+#nt = bpy.data.worlds[wd.name].node_tree
+
+#create new gradient texture node
+#gradNode = nt.nodes.new(type="ShaderNodeTexGradient")
+
+#find location of Background node and position Grad node to the left
+#backNode = nt.nodes['Background']
+#backNode.color = ( 1.0, 1.0, 1.0 )
+#gradNode.location.x = backNode.location.x -100
+#gradNode.location.y = backNode.location.y
+
+#Connect color out of Grad node to Color in of Background node
+#gradColOut = gradNode.outputs['Color']
+#backColIn = backNode.inputs['Color']
+#nt.links.new(gradColOut, backColIn)
+
+#set gradient type to easing
+#gradNode.gradient_type = 'EASING'
+
+#####################
+# create UV-mesh
+######################
+
+bpy.ops.object.select_all(action='DESELECT')
+object.select = True
+
+if imported.data.uv_layers:
+    print("Mesh has UVs")
+else:
+    scene.objects.active = object
+    me = imported.data
+    
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(me)  # requires edit_mode
+
+    uv_layer = bm.loops.layers.uv.verify()
+    bm.faces.layers.tex.verify()  # currently blender needs both layers.
+
+    # adjust UVs
+    for f in bm.faces:
+        for l in f.loops:
+            luv = l[uv_layer]
+            #if luv.select:
+            #print('into if')
+            # apply the location of the vertex as a UV
+            luv.uv = l.vert.co.xy
+            #print('uv: ', luv.uv )
+    
+    bmesh.update_edit_mesh(me)
+    #bpy.ops.mesh.remove_doubles(threshold=0.0001)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+if imported.data.uv_layers:
+    print("UVs generated")
+else:
+    # if this runs from an operator, you may want to report an error instead.
+    raise Exception("Missing UV's")
+
+
+
+########################
+# texture parameters
+########################
+
+surface_color = (0.95, 0.95, 0.95)
+surface_roughness = 0.9
+distri = 'GGX'  # [‘SHARP’, ‘BECKMANN’, ‘GGX’, ‘ASHIKHMIN_SHIRLEY’]
+# BECKMANN works good for metals
+# GGX for everything else
+# ASHIKHMIN_SHIRLES is in between 
+# according to "https://www.blenderguru.com/articles/cycles-shader-encyclopedia"
+
+
+
+# color [ r, g, b ], [ 0.0, 0.0, 0.0 ]
+# color of the object....
+# 0.0 refers to no no color in this channel
+# 1.0 refers to complete color output
+
+color = (0.95, 0.95, 0.95)
+
+# diffusion
+# nothing is completely diffuse or completely directional reflecting
+# diffusion describes the amount of diffuse refection
+# e.q. a Lambertian surface would have the value 1.0
+# e.q. a perfect mirror would have the value 0.0
+# further tips: 0.0 and 1.0 are not realistically achievable properties of materials
+diffusion = 0.0
+shader = 'LAMBERT'
+
+# reflectivity
+# nothing absorbs all incoming light or emits all incoming light
+# reflectivity describes the proportion of light that is beeing reemited/reflected
+# e.q. polished, perfectly smooth metal, would reflect a proportion of 1.0
+# e.g. an idealized black body would absorb all incoming light, having 0.0
+# futher tips: 0.0 and 1.0 are not achieveable
+reflectivity = 1.0
+
+# reflection_angle
+# describes the effect of the reflectivity change, of the object, depending on the observation angle
+# ....
+reflection_angle = 1.0
+
+# glossiness
+# also hardness or roughness, describes the gloss/smoothness of the material/reflection
+# e.g. metal has a glossy reflection
+# e.g. plastic has medium glossiness, however depending on the type
+# ....
+glossiness = 0.9    # 1/roughness; roughness increases blurr
+
+
+# bumpiness
+# bumpiness describes the physical imperfections of the shading result
+# e.q. mirrors use to have a bumpiness of almost 0.0
+# e.q. concrete is physically imperfect... having bumpiness close to 0.0
+# ....
+
+# new texture approach 1
+for material in bpy.context.object.material_slots:
+    bpy.context.object.material_slots.remove(material)
+
+#pdb.set_trace()
+
+mat_name = "metal"    # this' gonna be so fuckin' metal
+mat = bpy.data.materials.new(mat_name)
+mat.diffuse_color = color
+
+bpy.context.scene.objects.active = object
+me = bpy.context.active_object.data
+me.materials.append(mat)
+
+mat.use_nodes = True   # creates BSDF and Material output
+
+matNode = mat.node_tree.nodes
+matLink = mat.node_tree.links
+
+exiBSDF = mat.node_tree.nodes["Diffuse BSDF"]
+exiBSDF.location = 0, 200
+#exiBSDF.color = surface_color
+exiBSDF.inputs[1].default_value = surface_roughness
+
+exiMO = mat.node_tree.nodes["Material Output"]
+exiMO.location = 600, 0
+
+imgTex = matNode.new('ShaderNodeTexImage')
+imgTex.location = -200, 0
+imgTex.image = bpy.data.images.load("/home/sthalham/prototyping/met_surface.jpg")
+imgTex.projection = 'TUBE'      # apply direction to specific face
+
+diffuseBSDF = matNode.new(type='ShaderNodeBsdfDiffuse')
+diffuseBSDF.location = -200, 0
+diffuseBSDF.color = surface_color
+#diffuseBSDF.distribution = distri
+diffuseBSDF.inputs[1].default_value = surface_roughness
+
+glossyBSDF = matNode.new(type='ShaderNodeBsdfGlossy')
+glossyBSDF.location = 0, 0
+glossyBSDF.color = surface_color
+glossyBSDF.distribution = distri
+glossyBSDF.inputs[1].default_value = surface_roughness
+
+anisoBSDF = matNode.new(type='ShaderNodeBsdfAnisotropic')
+anisoBSDF.location = 0, -200
+anisoBSDF.distribution = distri
+anisoBSDF.inputs[1].default_value = surface_roughness     # roughness
+anisoBSDF.inputs[2].default_value = 10     # Anisotropy
+anisoBSDF.inputs[3].default_value = 0.1     # Rotation
+
+mixDifGlo = matNode.new('ShaderNodeMixShader')
+mixDifGlo.location = 200, 0
+mixDifGlo.inputs[0].default_value = 0.5
+mixDifGlo.color = color
+
+glassBSDF = matNode.new(type='ShaderNodeBsdfGlass')
+glassBSDF.location = 0, 400
+glassBSDF.inputs[1].default_value = surface_roughness
+glassBSDF.inputs[2].default_value = 0.75     # 1 is completetly transparent
+
+velvetBSDF = matNode.new(type='ShaderNodeBsdfVelvet')
+velvetBSDF.location = 0, 600
+velvetBSDF.inputs[1].default_value = surface_roughness
+
+#matLink.new(glassBSDF.outputs[0], mixDifGlo.inputs[1])
+#matLink.new(glossyBSDF.outputs[0], mixDifGlo.inputs[2])
+matLink.new(diffuseBSDF.outputs[0], exiMO.inputs[0] )
+
+
+#matLink.new(mixDifGlo.outputs[0], exiMO.inputs[0])
+
+
+####################################
+# create object with evenly spaced vertices
+####################################
+#create additional equally spaced vertices
+
+bpy.ops.object.select_all(action='DESELECT')
+bpy.context.scene.objects.active = object
+
+modi = object.modifiers.new(name='ReMesh', type='REMESH')
+
+modi.mode = 'SMOOTH'
+modi.octree_depth = 10
+modi.scale = 0.1 
+#modi.use_remove_disconnected = True
+ 
+bpy.ops.object.modifier_apply(modifier="ReMesh")
+
+#########################################
+# looping over camera views and lightings
+#########################################
+
+# Create new lamp datablock
+lamp_data = bpy.data.lamps.new(name="Lamp", type='POINT')
+lamp_object = bpy.data.objects.new(name="Lamp", object_data=lamp_data)
+scene.objects.link(lamp_object)
+
+# And finally select it make active
+lamp_object.select = True
+scene.objects.active = lamp_object
+
+lamp = lamp_data
+lamp.energy = 1000
+lamp.type = 'SPOT'
+lamp.distance = 50
+lamp.color = [1.0, 1.0, 1.0]
+#if lamp.type == 'SPOT':
+#    lamp.spotsize = 10
+
+lamp_object.location = (0.0, 0.0, 20.0)
+#lamp_object.rotation_euler = (-math.atan2(lamp_object.location[2],lamp_object.location[1]), 0.0, -math.atan2(lamp_object.location[2],lamp_object.location[1]) )
+
+cam_data = bpy.data.cameras.new("Camera")
+cam_object = bpy.data.objects.new("Camera", cam_data)
+scene.objects.link(cam_object)
+scene.camera = cam_object
+
+######################################
+# camera instrinsics
+######################################
+# Getting width, height and the camera
+
+
+w = scene.render.resolution_x*scene.render.resolution_percentage/100.
+h = scene.render.resolution_y*scene.render.resolution_percentage/100.
+#w = res_x*scn.render.resolution_percentage/100.
+#h = res_y*scn.render.resolution_percentage/100.
+cam = bpy.data.cameras['Camera']
+camobj = bpy.data.objects['Camera']
+
+# Getting camera parameters
+
+# Intrinsic
+C = Matrix().to_3x3()
+#cx = cam.sensor_width/(w * 100) # factor 100 for meters
+#cy = cam.sensor_height/(h * 100)
+cx = cam.sensor_width/w # factor 100 for meters
+cy = cam.sensor_height/h
+C[0][0] = -w/2. / math.tan(cam.angle_x/2)
+C[1][1] = -h/2. / math.tan(cam.angle_y/2)
+fx = ( w/2. / math.tan(cam.angle_x/2) ) * cx
+fy = ( h/2. / math.tan(cam.angle_y/2) ) * cy
+C[0][2] = w / 2.
+C[1][2] = h / 2.
+C[2][2] = 1.
+
+print('fx: ', fx)
+print('fy: ', fy)
+print('cx: ', cx)
+print('cy: ', cy)
+
+#############################################
+
+bpy.ops.object.select_all(action='SELECT')
+
+scene.objects.active = lamp_object
+scene.objects.active = cam_object
+
+camDist = (object.dimensions[0] + object.dimensions[1] + object.dimensions[2]) * 0.5
+
+xRotRes = 4
+rotX = np.linspace((my_pi/xRotRes),((2*my_pi)-(my_pi/xRotRes)),4)
+#print(rotX)
+
+zRotRes = views/xRotRes
+rotZ = np.linspace((my_pi/zRotRes),((2*my_pi)-(my_pi/zRotRes)), zRotRes)
+#print(rotZ)
+
+# View-Point creation based on "OCCLUSION, CLUTTER, AND ILLUMINATION INVARIANT OBJECT RECOGNITION"
+
+for imd, rx in enumerate( rotX ):
+        
+    for ind, rz in enumerate( rotZ ):
+        
+            number = "00000"
+            imgNumb = str(int(imd * zRotRes + ind))
+            print(imgNumb)
+            rgbName = "image00000"
+            pngName = rgbName[:-len(imgNumb)] + imgNumb
+        
+            zName = "depth00000"
+            depthName = zName[:-len(imgNumb)] + imgNumb
+        
+            pcdName = "pointcloud00000"
+            cloudName = pcdName[:-len(imgNumb)] + imgNumb + '.pcd'
+            cloudtext = pcdName[:-len(imgNumb)] + imgNumb 
+            
+            edgeRaw = "edge00000"
+            edgeName = edgeRaw[:-len(imgNumb)] + imgNumb
+        
+            cam_object.location = (camDist*math.cos(rz), camDist*math.sin(rz), camDist*math.sin(rx))
+            lamp_object.location = cam_object.location
+            soll = mathutils.Vector(( 0.0, 0.0, 0.0 ))
+    
+            look_at(cam_object, soll) 
+            look_at(lamp_object, soll)
+            bpy.context.scene.objects.active = cam_object
+            
+            add_background(bgi_name)
+            
+            RT = camobj.matrix_world.inverted()
+            
+            ############
+            # SAFE PNG
+            bpy.context.scene.render.filepath = targetRepo + "/" + pngName
+            bpy.context.scene.render.resolution_x = res_x*2 #perhaps set resolution in code
+            bpy.context.scene.render.resolution_y = res_y*2
+            bpy.ops.render.render(write_still = True)
+  
+            ####################################
+            # create depth-map
+            ####################################
+            
+            print( 'create depth map' )
+
+            # Set up rendering of depth map:
+            bpy.context.scene.use_nodes = True
+            tree = bpy.context.scene.node_tree
+            links = tree.links
+
+            # clear default nodes
+            for n in tree.nodes:
+                tree.nodes.remove(n)
+
+            # create input render layer node
+            rl = tree.nodes.new('CompositorNodeRLayers')
+
+            map = tree.nodes.new(type="CompositorNodeMapValue")
+            # Size is chosen kind of arbitrarily, try out until you're satisfied with resulting depth map.
+            map.size = [0.08]
+            map.use_min = True
+            map.min = [0]
+            map.use_max = True
+            map.max = [255]
+            links.new(rl.outputs[2], map.inputs[0])
+
+            invert = tree.nodes.new(type="CompositorNodeInvert")
+            links.new(map.outputs[0], invert.inputs[1])
+
+            # The viewer can come in handy for inspecting the results in the GUI
+            depthViewer = tree.nodes.new(type="CompositorNodeViewer")
+            links.new(invert.outputs[0], depthViewer.inputs[0])
+            # Use alpha from input.
+            links.new(rl.outputs[1], depthViewer.inputs[1])
+            
+            # SAFE DEPTH-MAP
+            # create a file output node and set the path
+            #fileOutput = tree.nodes.new(type="CompositorNodeOutputFile")
+            #fileOutput.base_path = targetRepo
+            #fileOutput.file_slots[0].path = depthName
+            #links.new(invert.outputs[0], fileOutput.inputs[0])
+            
+            #### create pcd
+            #bpy.ops.render.render()
+            
+            #depthMap = np.array(bpy.data.images['Viewer Node'].pixels)
+            #print( depthMap.shape)
+
+            #reshaping into image array 4 channel (rgbz)
+            #print('depthMap: ',depthMap.shape)
+            #depthImage = depthMap.reshape(res_y,res_x)
+
+            #depth analysis...
+            #safecloud = targetRepo + "/" + cloudtext + ".pcd"
+            #write_pcd( safecloud, depthImage, fx, fy )
+            
+            ####################################
+            # RGB-image creation based on "CAD-Based Recognition of 3D Objects in Monocular Images"
+            ####################################
+
+            # Threshold to test if ray cast corresponds to the original vertex
+            limit = 0.0001
+            
+            # temp object for Pointcloud
+            tempObj = object.copy()
+            tempObj.data = object.data.copy()
+            scene.objects.link(tempObj)
+
+            # Deselect mesh elements
+            DeselectEdgesAndPolygons( object )
+            DeselectEdgesAndPolygons( tempObj )
+            
+            bpy.ops.object.select_all(action='DESELECT')
+            scene.objects.active = tempObj
+
+            # In world coordinates, get a bvh tree and vertices
+            bvh, vertices = BVHTreeAndVerticesInWorldFromObj( object)
+
+            #print('Removing occluded vertices')
+
+            cameraImg = np.zeros((res_y, res_x, 4 ))
+            pointImg = np.zeros((res_y, res_x, 2 ))
+            pointImg[0:res_y,0:res_x,1].fill(-1)
+
+            for i, v in enumerate( vertices ):
+            
+                # Get the 2D projection of the vertex
+                co2D = world_to_camera_view( scene, cam_object, v )
+
+                # By default, deselect it
+                tempObj.data.vertices[i].select = True
+                    
+                posX = (round(co2D.x/piX_step))
+                posY = (round(co2D.y/piY_step))
+    
+                location, normal, index, distance = bvh.ray_cast( cam_object.location, (v - cam_object.location).normalized() )
+                
+                if 0 <= posX < res_x and 0 <= posY < res_y and normal is not None:
+        
+                    if location and (v - location).length < limit:
+
+                        cameraImg[res_y-posY,posX, 0] = cameraImg[res_y-posY,posX, 0] + float(normal[0])
+                        cameraImg[res_y-posY,posX, 1] = cameraImg[res_y-posY,posX, 1] + float(normal[1])
+                        cameraImg[res_y-posY,posX, 2] = cameraImg[res_y-posY,posX, 2] + float(normal[2])
+                        cameraImg[res_y-posY,posX, 3] = cameraImg[res_y-posY,posX, 3] + 1
+
+                        if distance < pointImg[posY, posX, 0] or pointImg[posY, posX, 0] == 0:
+                
+                            tempObj.data.vertices[i].select = False
+                            pointImg[posY, posX, 0] = distance
+                            #print("distance updated")
+                
+                            if pointImg[posY, posX, 1] >= 0:
+                                index = pointImg[posY, posX, 1]
+                                indInt = index.astype(int)
+ 
+                                tempObj.data.vertices[indInt].select = True
+                                pointImg[posY, posX, 1] = i
+                            else:
+                                pointImg[posY, posX, 1] = i
+         
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.delete(type='VERT')
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            del bvh
+            
+            # SAFE PCD
+            print('Safing pointcloud')
+
+            bpy.ops.object.select_all(action='DESELECT')
+            scene.objects.active = tempObj
+
+            exp_file = targetRepo + "/" + cloudName
+
+            io_points_pcd.pcd_utils.export_pcd(filepath=exp_file )
+        
+ #           exp_file = targetRepo + "/" + cloudtext
+
+#            io_points_pcd.pcd_utils.export_pcd(filepath=exp_file )
+
+            ##############################
+            # create edge image from normals
+            ###############################
+            pixels = np.zeros((res_y, res_x, 3))
+            dR = 3
+            #print(pixels)
+            for x in range(res_x):
+                for y in range(res_y):
+                    
+                    if cameraImg[y,x,3] == 0:
+                        #print(np.sum(cameraImg[y-1:y+1,x-1:x+1,3]))
+                        if np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,3]) > 2:
+                            pixels[y,x,0] = np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,0])/np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,3])
+                            pixels[y,x,1] = np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,1])/np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,3])
+                            pixels[y,x,2] = np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,2])/np.sum(cameraImg[y-dR:y+dR,x-dR:x+dR,3])
+                            #print(np.sum(pixels[y,x,:]))
+                        else:
+                            pixels[y,x,0] = -(cam_object.location[0]/cam_object.location[0])
+                            pixels[y,x,1] = -(cam_object.location[1]/cam_object.location[1])
+                            pixels[y,x,2] = -(cam_object.location[2]/cam_object.location[2])
+                            #print('counter zero')
+                            #print(np.sum(pixels[y,x,:]))
+                    else:
+                        pixels[y,x,0] = cameraImg[y,x,0]/cameraImg[y,x,3]
+                        pixels[y,x,1] = cameraImg[y,x,1]/cameraImg[y,x,3]
+                        pixels[y,x,2] = cameraImg[y,x,2]/cameraImg[y,x,3]
+                        #print(pixels[x,y,:])
+            
+            toInt = 255 * pixels
+            pixTemp = toInt.astype(int)
+            pixAbs = np.absolute(pixTemp)
+            #print(pixAbs.shape)
+            normRaw = "norm00000"
+            normName = normRaw[:-len(imgNumb)] + imgNumb            
+            safenorm = targetRepo + "/" + normName + ".bmp"
+            export_png( safenorm, pixAbs )
+      
+            edge = np.zeros((res_y, res_x))
+            
+            for x in range(1,res_x-1):
+                for y in range(1,res_y-1):
+                    
+                    if np.count_nonzero(pixels[y+1,x,:]) > 0 or np.count_nonzero(pixels[y-1,x,:]) > 0 or np.count_nonzero(pixels[y,x-1,:]) > 0 or np.count_nonzero(pixels[y,x+1,:]) > 0 :
+                    
+                        gcr = pixels[y,x+1,0] - pixels[y,x-1,0]  # horizontal gradient
+                        gcg = pixels[y,x+1,1] - pixels[y,x-1,1]
+                        gcb = pixels[y,x+1,2] - pixels[y,x-1,2]
+                    
+                        grr = pixels[y+1,x,0] - pixels[y-1,x,0]
+                        grg = pixels[y+1,x,1] - pixels[y-1,x,1]
+                        grb = pixels[y+1,x,2] - pixels[y-1,x,2]
+                    
+                        C = np.zeros(( 2, 2 ))
+                        C[0,0] = grr ** (2) + grg ** (2) + grb ** (2)
+                        C[0,1] = grr * gcr + grg * gcg + grb * gcb
+                        C[1,0] = C[0,1]
+                        C[1,1] = gcr ** (2) + gcg ** (2) + gcb ** (2)
+                    
+                        w,v = np.linalg.eig(C)
+                        max = np.amax(w)
+                        edgeAmp = math.sqrt(max)
+                        #if 2*np.arcsin(max*0.5) < 0.087:
+                        if 2*np.arcsin(edgeAmp*0.5) > (0.15):  # threshold could mybe be dependent on image resolution
+                            edge[y,x] = 255.0
+                            #print('Edge found')
+                
+            #print('shape edge: ', edge.shape)  
+            #safetxt = targetRepo + "/" + edgeName
+            safepng = targetRepo + "/" + edgeName + ".bmp"
+            print(edge.shape)
+            
+            #np.savetxt(safetxt, edge, delimiter=',') 
+            export_png( safepng, edge )
+            #notnparr = np.asfarray(edge)
+
+print("Finished rendering views")
