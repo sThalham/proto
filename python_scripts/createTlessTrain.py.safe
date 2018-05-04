@@ -1,0 +1,546 @@
+#!/usr/bin/env python
+
+import sys
+import os
+import yaml
+import cv2
+import numpy as np
+import json
+from scipy import ndimage
+import math
+
+from pcl import pcl_visualization
+import pandas as pd
+import tensorflow as tf
+
+
+def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, fov=-1, subtraction=True, for_vis=True):
+    res_y = depth_refine.shape[0]
+    res_x = depth_refine.shape[1]
+    # if (cx == -1):
+    #     centerX = (res_x - 1) / 2
+    # if (cy == -1):
+    #     centerY = (res_y - 1) / 2
+    centerX = cx
+    centerY = cy
+
+    if (fx == -1):
+        if (fov != -1):
+            constant = math.tan(math.radians(fov / 2)) / (res_x / 2)  # 1/f
+        else:
+            constant = math.tan(math.radians(self.fov / 2)) / (res_x / 2)  # 1/f
+    else:
+        constant = 1 / fx
+    uv_table = np.zeros((res_y, res_x, 2), dtype=np.int16)
+    column = np.arange(0, res_y)
+
+    uv_table[:, :, 1] = np.arange(0, res_x) - centerX  # x-c_x (u)
+    uv_table[:, :, 0] = column[:, np.newaxis] - centerY  # y-c_y (v)
+    uv_table_sign = np.copy(uv_table)
+    uv_table = np.abs(uv_table)
+
+    depth_refine = ndimage.gaussian_filter(depth_refine, 2)  # sigma=3)
+    # depth_refine = ndimage.uniform_filter(depth_refine, size=11)
+
+    # very_blurred = ndimage.gaussian_filter(face, sigma=5)
+    v_x = np.zeros((res_y, res_x, 3))
+    v_y = np.zeros((res_y, res_x, 3))
+    normals = np.zeros((res_y, res_x, 3))
+
+    dig = np.gradient(depth_refine, 2, edge_order=2)
+    v_y[:, :, 0] = uv_table_sign[:, :, 1] * constant * dig[0]
+    v_y[:, :, 1] = depth_refine * constant + (uv_table_sign[:, :, 0] * constant) * dig[0]
+    v_y[:, :, 2] = dig[0]
+
+    v_x[:, :, 0] = depth_refine * constant + uv_table_sign[:, :, 1] * constant * dig[1]
+    v_x[:, :, 1] = uv_table_sign[:, :, 0] * constant * dig[1]
+    v_x[:, :, 2] = dig[1]
+
+    cross = np.cross(v_x.reshape(-1, 3), v_y.reshape(-1, 3))
+    norm = np.expand_dims(np.linalg.norm(cross, axis=1), axis=1)
+    norm[norm == 0] = 1
+    cross = cross / norm
+    cross = cross.reshape(res_y, res_x, 3)
+    cross = np.abs(cross)
+    cross = np.nan_to_num(cross)
+    # cross_ref = np.copy(cross)
+    # cross[cross_ref==[0,0,0]]=0 #set zero for nan values
+    cam_angle = np.arccos(cross[:, :, 2])
+    cross[np.abs(cam_angle) > math.radians(75)] = 0  # high normal cut
+    cross[depth_refine <= 0.3] = 0  # 0 and near range cut
+    cross[depth_refine > 3] = 0  # far range cut
+    if (for_vis == False):
+        cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
+        cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
+        cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
+
+    return cross
+
+
+def create_BB(rgb):
+
+    imgray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+    mask = imgray > 25
+
+    oneA = np.ones(imgray.shape)
+    masked = np.where(mask, oneA, 0)
+
+    kernel = np.ones((9, 9), np.uint8)
+    mask_dil = cv2.dilate(masked, kernel, iterations=1)
+
+    im2, contours, hier = cv2.findContours(np.uint8(mask_dil), 1, 2)
+
+    cnt = contours[0]
+    x, y, w, h = cv2.boundingRect(cnt)
+
+    rect = cv2.minAreaRect(cnt)
+    box = cv2.boxPoints(rect)
+    area = cv2.contourArea(box)
+
+    # cv2.drawContours(rgb, [box], -1, (170, 160, 0), 2)
+    # cv2.rectangle(rgb, (x, y), (x+w, y+h), (0, 255, 0), 2)
+    bb = np.array([x, y, w, h])
+
+    return cnt, bb, area, mask_dil
+
+
+def create_depth_image(points, normals, fx, fy, cx, cy, ds, rx, ry):
+    fros = 580.0
+
+    npx = np.int16(rx)
+    npy = np.int16(ry)
+    img = np.zeros((npy, npx, 3), dtype=np.uint8)
+
+    for r in range(0, len(points[:, 0])):
+        if np.isnan(points[r, :]).any():
+            pass
+        else:
+            z = points[r, 2]
+            x = (points[r, 0] * fx/z) + cx
+            y = (points[r, 1] * fy/z) + cy
+
+            if np.isnan(x) | np.isnan(y):
+                pass
+            else:
+                x = np.int16(np.round(x))
+                y = np.int16(np.round(y))
+                ind = np.int16(r)
+                img[y, x, 0] = np.round(((1.0 + normals[ind, 0]) * 0.5) * 255.0)
+                img[y, x, 1] = np.round(((1.0 + normals[ind, 1]) * 0.5) * 255.0)
+                img[y, x, 2] = np.round(((1.0 + normals[ind, 2]) * 0.5) * 255.0)
+                # print(img[y,x,:])
+
+    imgI = img.astype(np.uint8)
+
+    return imgI
+
+
+def create_point_cloud(depth, fx, fy, cx, cy, ds):
+
+    rows, cols = depth.shape
+
+    fros = 580.0
+
+    npCloud = []
+    for r in range(0, rows):
+        for c in range(0, cols):
+            z = depth[r, c] * ds * 0.001
+
+            xN = (c - cx) * z / fx
+            yN = (r - cy) * z / fy
+            point = np.array((xN, yN, z))
+            npCloud.append(point)
+
+    return np.array(npCloud)
+
+
+def create_coco(outfile, img, imgname, imgnum, category, cnt, bb, area):
+
+    rows, cols, channels = img.shape
+    data = []
+    fname = outfile
+
+    iname = str(imgname)
+    # contour = ' '.join(map(str, cnt))
+    contour = np.array2string(cnt, separator=',')
+    contour = contour.replace("[", "")
+    contour = contour.replace("]", "")
+    contour = contour.replace("\n", "")
+    contour = contour.replace(" ", "")
+
+    bobo = np.array2string(bb, separator=' ')
+    bobo = bobo.replace("[", "")
+    bobo = bobo.replace("]", "")
+    bobo = bobo.replace("  ", ",")
+    bobo = bobo.replace(" ", ",")
+
+    if os.path.exists(outfile):
+        # jdata = json.load(open(outfile).read())
+        jdata = json.load(open(outfile))
+        item = {
+            "licenses": {
+                "url": "...",
+                "id": imgnum,
+                "name": iname
+            },
+            "images": {
+                "license": 1,
+                "url": "...",
+                "file_name": iname,
+                "height": rows,
+                "width": cols,
+                "date_captured": "...",
+                "id": imgnum
+            },
+            "type": "instances",
+            "annotations": {
+                "id": imgnum,
+                "image_id": imgnum,
+                "category_id": category,
+                "bbox": bobo,
+                "segmentation": contour,
+                "area": area,
+                "iscrowd": 0
+            },
+            "categories": {
+                "id": imgnum,
+                "name": category,
+                "supercategory": "object"
+            }
+
+        }
+        jdata.append(item)
+        with open(outfile, 'w') as fp:
+            json.dump(jdata, fp)
+
+    else:
+        item = {
+                    "info": {
+                        "description": "tless",
+                        "url": "cmp.felk.cvut.cz/t-less/",
+                        "version": "1.0",
+                        "year": "2018",
+                        "contributor": "Stefan Thalhammer",
+                        "date_created": "2018-03-29"
+                    },
+                    "licenses": {
+                        "url": "...",
+                        "id": imgnum,
+                        "name": iname
+                    },
+                    "images": {
+                        "license": 1,
+                        "url": "...",
+                        "file_name": iname,
+                        "height": rows,
+                        "width": cols,
+                        "date_captured": "...",
+                        "id": imgnum
+                    },
+                    "type": "instances",
+                    "annotations": {
+                        "id": imgnum,
+                        "image_id": imgnum,
+                        "category_id": category,
+                        "bbox": bobo,
+                        "segmentation": contour,
+                        "area": area,
+                        "iscrowd": 0
+                    },
+                    "categories": {
+                        "id": imgnum,
+                        "name": category,
+                        "supercategory": "object"
+                    }
+
+            }
+
+        data.append(item)
+
+        with open(outfile, 'w') as fp:
+            json.dump(data, fp)
+
+
+if __name__ == "__main__":
+
+    root = sys.argv[1] + "/"  # path to train samples, depth + rgb
+    safe = sys.argv[2] + "/"
+    print(root)
+
+    sub = os.listdir(root)
+    sub = sub[10:]
+
+    dict = {"info": {
+                "description": "tless",
+                "url": "cmp.felk.cvut.cz/t-less/",
+                "version": "1.0",
+                "year": "2018",
+                "contributor": "Stefan Thalhammer",
+                "date_created": "2018-03-29"
+                    },
+            "licenses": [],
+            "images": [],
+            "type": "instances",
+            "annotations": [],
+            "categories": []
+            }
+
+    dictVal = dict
+
+    annoID = 0
+
+    for s in sub:
+        rgbPath = root + s + "/rgb/"
+        depPath = root + s + "/depth/"
+        gtPath = root + s + "/gt.yml"
+        infoPath = root + s + "/info.yml"
+
+        with open(infoPath, 'r') as stream:
+            opYML = yaml.load(stream)
+
+        subsub = os.listdir(rgbPath)
+
+        for ss in subsub:
+            imgname = ss
+            rgbImgPath = rgbPath + ss
+            depImgPath = depPath + ss
+            print(rgbImgPath)
+
+            if ss.startswith('000'):
+                ss = ss[3:]
+            elif ss.startswith('00'):
+                ss = ss[2:]
+            elif ss.startswith('0'):
+                ss = ss[1:]
+            ss = ss[:-4]
+            
+            print(ss)
+            calib = opYML[int(ss)]
+            K = calib["cam_K"]
+            depSca = calib["depth_scale"]
+            fx = K[0]
+            # print(fx)
+            fy = K[4]
+            # print(fy)
+            cxx = K[2]
+            # print(cx)
+            cyy = K[5]
+            # print(cy)
+
+            #########################
+            # Prepare the stuff
+            #########################
+
+            # read images and create mask
+            rgbImg = cv2.imread(rgbImgPath)
+            depImg = cv2.imread(depImgPath, cv2.IMREAD_UNCHANGED)
+
+            normImg = get_normal(depImg, fx=580, cx=cxx, cy=cyy, subtraction=True, for_vis=True)
+
+            normImg = np.multiply(normImg, 255.0)
+            imgI = normImg.astype(np.uint8)
+            print(np.amax(imgI[:, :, 0]))
+            print(np.amax(imgI[:, :, 1]))
+            print(np.amax(imgI[:, :, 2]))
+
+            cv2.imwrite('/home/sthalham/normals.png', imgI)
+
+            cnt, bb, area, mask = create_BB(rgbImg)
+
+            # normals image
+            # kernel = np.ones((11, 11), np.uint8)
+            # blur = cv2.dilate(depImg, kernel, iterations=1)
+            # blur = cv2.medianBlur(blur, 5, )
+
+            rows, cols = depImg.shape
+            #kernY = np.array([[1.0, 2.0, 3.0, 2.0, 1.0], [0.0, 1.0, 2.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0, 0.0], \
+            #                  [0.0, -1.0, -2.0, -1.0, 0.0], [-1.0, -2.0, -3.0, -2.0, -1.0]])/25
+            # kernY = np.array([[1.0, 2.0, 3.0, 4.0, 3.0, 2.0, 1.0], [0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0], \
+            #                   [0.0, 0.0, 1.0, 2.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], \
+            #                   [0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 0.0], [0.0, -1.0, -2.0, -3.0, -2.0, -1.0, 0.0], \
+            #                   [-1.0, -2.0, -3.0, -4.0, -3.0, -2.0, -1.0]])/49
+
+
+            # kernY = np.array([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0], \
+            #                 [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], \
+            #                 [0.0, 0.0, -1.0, -1.0, -1.0, 0.0, 0.0], [0.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], \
+            #                 [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]])/49
+            # kernX = kernY.transpose()
+
+            # dstY = cv2.filter2D(blur, -1, kernY, (-1, -1))
+            # dstX = cv2.filter2D(blur, -1, kernX, (-1, -1))
+
+            # normImg = np.zeros((rows, cols, 3), dtype=np.float32)
+            # for r in range(1, (rows-1)):
+            #     for c in range(1, (cols-1)):
+            #         d = np.array([dstY[r, c], dstX[r, c], 0.0])
+            #         dn = d / np.linalg.norm(d)
+            #         normImg[r, c, :] = dn
+
+            # normImg = np.multiply(normImg, 255.0)
+            # imgI = normImg.astype(np.uint8)
+
+            # create depth image and calculate normals
+            # deprecated
+            # pc = create_point_cloud(depImg, fx, fy, cx, cy, depSca)
+
+            # cloud = pcl.PointCloud(np.array(pc, dtype=np.float32))
+            # kd = cloud.make_kdtree_flann()
+
+            # normCloud = []
+            # for i in range(len(pc[:, 0])):
+            #     if np.isnan(pc[i, :]).any():
+            #         normCloud.append((0.0, 0.0, 0.0))
+            #     else:
+            #         ind, sqd = kd.nearest_k_search_for_point(cloud, i, k=9)
+                    # ind, sqd = kd.radiusSearch(cloud, i, 0.01)
+            #         pointsN = np.transpose(pc[ind, :])
+            #         U, s, V = np.linalg.svd(pointsN, full_matrices=True)
+            #         norm = U[:, 0]
+
+            #         normCloud.append(np.transpose(norm))
+
+            # ro, co = depImg.shape
+            # depRGB = create_depth_image(pc, np.array(normCloud), fx, fy, cx, cy, depSca, ro, co)
+            # cv2.imwrite('/home/sthalham/normals.png', depRGB)
+
+            # print(np.amax(depRGB[:, :, 0]))
+            # print(np.amin(depRGB[:, :, 0]))
+            # print(np.amax(depRGB[:, :, 1]))
+            # print(np.amin(depRGB[:, :, 1]))
+            # print(np.amax(depRGB[:, :, 2]))
+            # print(np.amin(depRGB[:, :, 2]))
+
+            # create image number and name
+            template = '00000'
+            s = int(s)
+            ss = int(ss)
+            pre = (s-1) * 1296
+            ssAll = pre + ss
+            tempSS = template[:-len(str(ssAll))]
+            ssStr = str(ssAll)
+            imgNum = str(ssAll)
+            imgNam = tempSS + imgNum + '.jpg'
+            print(imgNam)
+            category = str(s)
+
+            iname = str(imgNam)
+            # contour = ' '.join(map(str, cnt))
+            contour = np.array2string(cnt, separator=',')
+            contour = contour.replace("[", "")
+            contour = contour.replace("]", "")
+            contour = contour.replace("\n", "")
+            contour = contour.replace(" ", "")
+
+            cont = cnt.tolist()
+            bobo = bb.tolist()
+
+            drawN = [1, 1, 1, 1, 1, 2, 2]
+            freq = np.bincount(drawN)
+
+            rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
+            print(rnd)
+
+            if rnd == 1:
+
+                depthName = '/home/sthalham/data/T-less_Detectron/train/imagesD/' + imgNam
+                rgbName = '/home/sthalham/data/T-less_Detectron/train/imagesC/' + imgNam
+                cv2.imwrite(depthName, imgI)
+                cv2.imwrite(rgbName, rgbImg)
+
+                # create dictionaries for json
+                temp = {
+                    "url": "...",
+                    "id": ssAll,
+                    "name": iname
+                }
+                dict["licenses"].append(temp)
+
+                temp = {
+                    "license": 2,
+                    "url": "cmp.felk.cvut.cz/t-less/",
+                    "file_name": iname,
+                    "height": rows,
+                    "width": cols,
+                    "date_captured": "unknown",
+                    "id": ssAll
+                }
+                dict["images"].append(temp)
+
+                annoID = annoID + 1
+                temp = {
+                    "id": annoID,
+                    "image_id": ssAll,
+                    "category_id": s,
+                    "bbox": bobo,
+                    "segmentation": cont,
+                    "area": area,
+                    "iscrowd": 0
+                }
+                dict["annotations"].append(temp)
+
+                temp = {
+                    "id": s,
+                    "name": category,
+                    "supercategory": "object"
+                }
+                dict["categories"].append(temp)
+
+            else:
+                depthName = '/home/sthalham/data/T-less_Detectron/train/valD/' + imgNam
+                rgbName = '/home/sthalham/data/T-less_Detectron/train/valC/' + imgNam
+                cv2.imwrite(depthName, imgI)
+                cv2.imwrite(rgbName, rgbImg)
+
+                # create dictionaries for json
+                temp = {
+                    "url": "...",
+                    "id": ssAll,
+                    "name": iname
+                }
+                dictVal["licenses"].append(temp)
+
+                temp = {
+                    "license": 2,
+                    "url": "cmp.felk.cvut.cz/t-less/",
+                    "file_name": iname,
+                    "height": rows,
+                    "width": cols,
+                    "date_captured": "unknown",
+                    "id": ssAll
+                }
+                dictVal["images"].append(temp)
+
+                annoID = annoID + 1
+                temp = {
+                    "id": annoID,
+                    "image_id": ssAll,
+                    "category_id": s,
+                    "bbox": bobo,
+                    "segmentation": cont,
+                    "area": area,
+                    "iscrowd": 0
+                }
+                dictVal["annotations"].append(temp)
+
+                temp = {
+                    "id": s,
+                    "name": category,
+                    "supercategory": "object"
+                }
+                dictVal["categories"].append(temp)
+
+            print("inner loop")
+
+    trainAnno = "/home/sthalham/data/T-less_Detection/train/annotations/instances_train2014.json"
+    valAnno = "/home/sthalham/data/T-less_Detection/train/annotations/instances_val2014.json"
+
+    with open(trainAnno, 'w') as fp:
+        json.dump(dict, fp)
+
+    with open(valAnno, 'w') as fp:
+        json.dump(dictVal, fp)
+
+    print('everythings done')
+
+
