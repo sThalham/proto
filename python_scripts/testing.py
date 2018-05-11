@@ -10,6 +10,8 @@ import datetime
 import copy
 import transforms3d as tf3d
 import itertools
+from pcl import pcl_visualization
+import pcl
 
 import OpenEXR, Imath
 
@@ -22,6 +24,76 @@ focalLx = 579.68  # blender calculated
 focalLy = 542.31  # blender calculated
 
 np.set_printoptions(threshold=np.nan)
+
+def create_point_cloud(depth, fx, fy, cx, cy, ds):
+
+    rows, cols = depth.shape
+
+    fros = 580.0
+
+    npCloud = []
+    for r in range(0, rows):
+        for c in range(0, cols):
+            z = depth[r, c] * ds * 0.001
+
+            xN = (c - cx) * z / fx
+            yN = (r - cy) * z / fy
+            point = np.array((xN, yN, z))
+            npCloud.append(point)
+
+    return np.array(npCloud)
+
+
+def geoCooFrame(normals):
+
+    r, c, p = normals.shape
+    angEst = np.zeros(normals.shape, dtype=np.float32)
+    angEst[:, : ,2] = 1.0
+
+    ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0)
+
+    for th in ang:
+        NyPar = []
+        NyOrt = []
+        for x in range(len(normals[1, :, 1])):
+            for y in range(len(normals[:, 1, 1])):
+                if not np.any(normals[y, x, :]):
+                    continue
+
+                angtemp = np.dot(normals[y, x, :], angEst[y, x, :]) / (np.linalg.norm(angEst[y, x, :]) * np.linalg.norm(normals[y, x, :]))
+                if angtemp < 0.0:
+                    angtemp = angtemp + 1.0
+                if angtemp > math.pi:
+                    angtemp = angtemp - 1.0
+                angtemp = math.acos(angtemp) * (180/math.pi)
+
+                if angtemp < th or angtemp > (180.0 - th):
+                    NyPar.append(normals[y, x, :])
+                else:
+                    NyOrt.append(normals[y, x, :])
+
+        NyPar = np.asarray(NyPar, dtype=np.float32)
+        NyOrt = np.asarray(NyOrt, dtype=np.float32)
+        cov = (np.transpose(NyOrt)).dot(NyOrt) - (np.transpose(NyPar)).dot(NyPar)
+        u, s, vh = np.linalg.svd(cov)
+
+        angEst = np.tile(u[:, 2], r*c).reshape((r, c, 3))
+
+    gImg = np.zeros((r, c), dtype=np.float)
+    for x in range(len(normals[1, :, 1])):
+        for y in range(len(normals[:, 1, 1])):
+            angtemp = np.dot(normals[y, x, :], angEst[y, x, :]) / (
+                        np.linalg.norm(angEst[y, x, :]) * np.linalg.norm(normals[y, x, :]))
+            if angtemp < 0.0:
+                angtemp = angtemp + 1.0
+            if angtemp > math.pi:
+                angtemp = angtemp - 1.0
+            angtemp = math.acos(angtemp) * (180 / math.pi)
+            gImg[y, x] = angtemp
+
+    cv2.imwrite('/home/sthalham/gravImg.png', gImg)
+
+    return normals
 
 
 def roundPartial(value, resolution):
@@ -80,39 +152,51 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     ###################################################
     partmask = partmask.astype(np.uint8)
 
-    cv2.imwrite('/home/sthalham/mask.png', partmask)
-
     mask = partmask > 20
     depth = np.where(mask, depth, 0.0)
 
+    onethird = cv2.resize(depth, None, fx=1/3, fy=1/3, interpolation=cv2.INTER_AREA)
+
+    onethird = cv2.GaussianBlur(onethird, (5, 5), 0.6, 0.6)
+
+
     # round to depth resolution
-    res = (((depth / 1000) * 1.41421356) ** 2) * 1000
+    # should be correct... is applied to depth itself
+    #res = (((depth / 1000) * 1.41421356) ** 2) * 1000
+    res = (((onethird / 1000) * 1.41421356) ** 2) * 1000
+    depth = onethird
+
+
 
     # discretize to resolution and apply gaussian
-    # discretize to resolution steps
     dNonVar = np.divide(depth, res, out=np.zeros_like(depth), where=res!=0)
     dNonVar = np.round(dNonVar)
     dNonVar = np.multiply(dNonVar, res)
 
-    # determine elementwise noise
     '''
     according to Khoshelham et al.
     std-dev(mm) calib:   x = y = 10, z = 18
     std-dev(mm) uncalib: x = 14, y = 15, z = 18
     '''
-    noise = np.multiply(dNonVar, 0.018)
-    dMan = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
+    noise = np.multiply(dNonVar, 0.0025)
+    depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
 
+    '''
     # nguyen et al. sig_lat ~ 0.85 pixel
     noisex = np.zeros((depth.shape), dtype=np.float32)
     noisey = np.zeros((depth.shape), dtype=np.float32)
-    noisex = np.random.normal(loc=noisex, scale=1.0)
-    noisey = np.random.normal(loc=noisey, scale=1.0)
+    noisex = np.random.normal(loc=noisex, scale=0.0)
+    noisey = np.random.normal(loc=noisey, scale=0.0)
     noisex = np.round(noisex)
     noisey = np.round(noisey)
+    print(np.amax(noisex))
+    print(np.amin(noisex))
+    print(np.amax(noisey))
+    print(np.amin(noisey))
 
     # apply lateral noise by sampling which pixels to choose
     # vectorize?
+    rowsNow, colsNow = depth.shape
     depthFinal = np.zeros((depth.shape), dtype=np.float32)
     for (y, x), pixel in np.ndenumerate(depth):
         indX = x+noisex[y, x]
@@ -121,32 +205,36 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
         indY = indY.astype(int)
         if indX < 0:
             indX = 0
-        if indX > (kin_res_x - 1):
-            indX = (kin_res_x - 1)
+        if indX > (colsNow - 1):
+            indX = (colsNow - 1)
         if indY < 0:
             indY = 0
-        if indY > (kin_res_y - 1):
-            indY = (kin_res_y - 1)
+        if indY > (rowsNow - 1):
+            indY = (rowsNow - 1)
 
-        depthFinal[y, x] = dMan[indY, indX]
+        rangeX = (x, indX)
+        rX = np.sort(rangeX)
+        rX[1] += 1
+        xr = rX.shape
 
-    '''
-    # inflate missing pixel values
-    dep0 = np.where(depthFinal < 0.01)
-    dep0 = np.asarray(dep0)
-    xy, multi = dep0.shape
-    rows, cols = depth.shape
-    for i in range(0, multi):
-        y = dep0[0, i]
-        x = dep0[1, i]
-        if y < 1 or x < 1:
-            continue
-        if y > (rows-1) or x > (cols-1):
-            continue
-        depthFinal[(y-1):(y+1), (x-1):(x+1)] = 0.0
+        rangeY = (y, indY)
+        rY = np.sort(rangeY)
+        rY[1] += 1
+        yr = rY.shape
+
+        print(rY[0], rY[yr[0]-1], rX[0], rX[xr[0]-1])
+        depthFinal[y, x] = np.mean(dMan[rY[0]:rY[yr[0]-1], rX[0]:rX[xr[0]-1]])
+
     '''
 
     # depthFinal = cv2.GaussianBlur(depthFinal, (9, 9), 2.0, 2.0)  # only god knows why
+
+    # INTER_NEAREST - a nearest-neighbor interpolation
+    # INTER_LINEAR - a bilinear interpolation (used by default)
+    # INTER_AREA - resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire’-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method.
+    # INTER_CUBIC - a bicubic interpolation over 4x4 pixel neighborhood
+    # INTER_LANCZOS4 - a Lanczos interpolation over 8x8 pixel neighborhood
+    depthFinal = cv2.resize(depthFinal, None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST)
 
     return depthFinal, bboxes, poses, mask_ids
 
@@ -219,7 +307,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
 ##########################
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes02052018/patches'  # path to train samples
+    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
     model = '/home/sthalham/workspace/python/src/model.yml.gz'
 
     compare = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/19/depth/0412.png', -1)
@@ -240,27 +328,27 @@ if __name__ == "__main__":
     normImg = get_normal(compare, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
     normImg = np.multiply(normImg, 255.0)
     imgI = normImg.astype(np.uint8)
-    cv2.imwrite('/home/sthalham/normkin_19_0412.png', imgI)
+    #cv2.imwrite('/home/sthalham/normkin_19_0412.png', imgI)
 
     normImg = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
     normImg = np.multiply(normImg, 255.0)
     imgI = normImg.astype(np.uint8)
-    cv2.imwrite('/home/sthalham/normkin_9_0117.png', imgI)
+    #cv2.imwrite('/home/sthalham/normkin_9_0117.png', imgI)
 
     normImg = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
     normImg = np.multiply(normImg, 255.0)
     imgI = normImg.astype(np.uint8)
-    cv2.imwrite('/home/sthalham/normkin_13_0079.png', imgI)
+    #cv2.imwrite('/home/sthalham/normkin_13_0079.png', imgI)
 
     normImg = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
     normImg = np.multiply(normImg, 255.0)
     imgI = normImg.astype(np.uint8)
-    cv2.imwrite('/home/sthalham/normkin_4_0291.png', imgI)
+    #cv2.imwrite('/home/sthalham/normkin_4_0291.png', imgI)
 
     normImg = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
     normImg = np.multiply(normImg, 255.0)
     imgI = normImg.astype(np.uint8)
-    cv2.imwrite('/home/sthalham/normkin_16_0205.png', imgI)
+    #cv2.imwrite('/home/sthalham/normkin_16_0205.png', imgI)
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -290,6 +378,9 @@ if __name__ == "__main__":
     for fileInd in os.listdir(root):
         if fileInd.endswith(".yaml"):
             redname = fileInd[:-8]
+            print(str(redname))
+            if redname != "00000019":
+                continue
             gtfile = gtPath + '/' + fileInd
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
@@ -308,15 +399,33 @@ if __name__ == "__main__":
             depthcanny = cv2.Canny(depth_int8, 100, 200)
             cv2.imwrite('/home/sthalham/cannydepth.png', depthcanny)
             '''
-            depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2.5, 2.5)
+            #depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2.5, 2.5)
 
+
+            #pcA = create_point_cloud(depth_refine, focalLx, focalLy, kin_res_x*0.5, kin_res_y*0.5, 1.0)
+            #cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
+            #visual = pcl.pcl_visualization.CloudViewing()
+            #visual.ShowMonochromeCloud(cloudA)
+
+
+            #pcC = create_point_cloud(compare, fkinx, fkiny, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
+            #cloudC = pcl.PointCloud(np.array(pcC, dtype=np.float32))
+            #visual1 = pcl.pcl_visualization.CloudViewing()
+            #visual1.ShowMonochromeCloud(cloudC)
+
+            
             focalL = 580        # according to microsoft
             focalLx = 579.68    # blender calculated
             focalLy = 542.31    # blender calculated
-            normImg = get_normal(depth_blur, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5), for_vis=True)
+            normImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
+                            for_vis=True)
             normImg = np.multiply(normImg, 255.0)
             imgI = normImg.astype(np.uint8)
-            cv2.imwrite('/home/sthalham/normarti992525.png', imgI)
+            cv2.imwrite('/home/sthalham/normarti.png', imgI)
+
+            grav = geoCooFrame(normImg)
+
+            '''
 
             depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2, 2)
 
@@ -324,11 +433,11 @@ if __name__ == "__main__":
                                  for_vis=True)
             normImg = np.multiply(normImg, 255.0)
             imgI = normImg.astype(np.uint8)
-            cv2.imwrite('/home/sthalham/normarti.png', imgI)
+            #cv2.imwrite('/home/sthalham/normarti.png', imgI)
 
 
 
-            '''
+            
             edge_detection = cv2.ximgproc.createStructuredEdgeDetection(model)
 
             depth_im = cv2.cvtColor(imgI, cv2.COLOR_BGR2RGB)

@@ -22,6 +22,19 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     res_y = depth_refine.shape[0]
     res_x = depth_refine.shape[1]
 
+    # inpainting
+    scaleOri = np.amax(depth_refine)
+    inPaiMa = np.where(depth_refine == 0.0, 255, 0)
+    inPaiMa = inPaiMa.astype(np.uint8)
+    inPaiDia = 5.0
+    depth_refine = depth_refine.astype(np.float32)
+    depPaint = cv2.inpaint(depth_refine, inPaiMa, inPaiDia, cv2.INPAINT_NS)
+
+    depNorm = depPaint - np.amin(depPaint)
+    rangeD = np.amax(depNorm)
+    depNorm = np.divide(depNorm, rangeD)
+    depth_refine = np.multiply(depNorm, scaleOri)
+
     centerX = cx
     centerY = cy
 
@@ -66,9 +79,9 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     # cross_ref = np.copy(cross)
     # cross[cross_ref==[0,0,0]]=0 #set zero for nan values
 
-    cam_angle = np.arccos(cross[:, :, 2])
-    cross[np.abs(cam_angle) > math.radians(75)] = 0  # high normal cut
-    cross[depth_refine <= 300] = 0  # 0 and near range cut
+    # cam_angle = np.arccos(cross[:, :, 2])
+    # cross[np.abs(cam_angle) > math.radians(75)] = 0  # high normal cut
+    # cross[depth_refine <= 300] = 0  # 0 and near range cut
     cross[depth_refine > 1500] = 0  # far range cut
     if not for_vis:
         cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
@@ -105,8 +118,8 @@ def create_BB(rgb):
 
 if __name__ == "__main__":
 
-    root = sys.argv[1] + "/"  # path to train samples, depth + rgb
-    safe = sys.argv[2] + "/"
+    root = "/home/sthalham/data/t-less_v2/train_kinect/"  # path to train samples, depth + rgb
+    safe = "/home/sthalham/data/T-less_Detectron/tless_train/"
     # print(root)
 
     sub = os.listdir(root)
@@ -167,9 +180,9 @@ if __name__ == "__main__":
             calib = opYML[int(ss)]
             K = calib["cam_K"]
             depSca = calib["depth_scale"]
-            fx = K[0]
+            fxkin = K[0]
             # print(fx)
-            fy = K[4]
+            fykin = K[4]
             # print(fy)
             cxx = K[2]
             # print(cx)
@@ -185,7 +198,7 @@ if __name__ == "__main__":
             depImg = cv2.imread(depImgPath, cv2.IMREAD_UNCHANGED)
             depImg = np.multiply(depImg, 0.1)
 
-            normImg = get_normal(depImg, fx=580, cx=cxx, cy=cyy, for_vis=True)
+            normImg = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxx, cy=cyy, for_vis=True)
 
             normImg = np.multiply(normImg, 255.0)
             imgI = normImg.astype(np.uint8)
@@ -234,11 +247,11 @@ if __name__ == "__main__":
 
                 # depthName = '/home/sthalham/data/T-less_Detectron/tless_all/trainD/' + imgNam
                 # cv2.imwrite(rgbName, imgI)
-                rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/train/' + imgNam
-                cv2.imwrite(rgbName, rgbImg)
+                depthName = safe + 'train/' + imgNam
+                cv2.imwrite(depthName, imgI)
 
-                # print("TRAIN")
-                # iprint("storing in train: ", rgbName)
+                #print("TRAIN")
+                #print("storing in train: ", rgbName)
 
                 # create dictionaries for json
                 tempTl = {
@@ -335,7 +348,7 @@ if __name__ == "__main__":
         dictVal["categories"].append(tempC)
 
     # valAnno = "/home/sthalham/data/T-less_Detectron/tlessC_split/annotations/instances_val_tless.json"
-    trainAnno = "/home/sthalham/data/T-less_Detectron/tlessC_all/annotations/instances_train_tless.json"
+    trainAnno = safe + "annotations/instances_train_tless.json"
 
     with open(trainAnno, 'w') as fpT:
         json.dump(dict, fpT)

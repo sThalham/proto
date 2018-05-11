@@ -186,14 +186,12 @@ if __name__ == "__main__":
             calib = opYML[int(ss)]
             K = calib["cam_K"]
             depSca = calib["depth_scale"]
+            elev = calib["elev"]
             fxkin = K[0]
-            # print(fx)
             fykin = K[4]
-            # print(fy)
             cxx = K[2]
-            # print(cx)
             cyy = K[5]
-            # print(cy)
+
 
             #########################
             # Prepare the stuff
@@ -210,26 +208,7 @@ if __name__ == "__main__":
             normImg = np.multiply(normImg, 255.0)
             imgI = normImg.astype(np.uint8)
 
-            # 3rd channel to be depth
-            # inpainting
-            scaleOri = np.amax(depImg)
-            inPaiMa = np.where(depImg == 0.0, 255, 0)
-            inPaiMa = inPaiMa.astype(np.uint8)
-            inPaiDia = 5.0
-            depImg = depImg.astype(np.float32)
-            depPaint = cv2.inpaint(depImg, inPaiMa, inPaiDia, cv2.INPAINT_NS)
-
-
-            depNorm = depPaint - np.amin(depPaint)
-            rangeD = np.amax(depNorm)
-            depNorm = np.divide(depNorm, rangeD)
-            depImg = np.multiply(depNorm, scaleOri)
-
-            scaDep = 255.0 / np.amax(depImg)
-            depScaled = np.multiply(depImg, scaDep)
-            depInt = depScaled.astype(np.uint8)
-
-            imgI[:, :, 2] = depInt
+            #cv2.imwrite('/home/sthalham/test.jpg', imgI)
 
             # create image number and name
             template = '00000'
@@ -258,7 +237,8 @@ if __name__ == "__main__":
 
             # change drawN if you want a data split
             # print("storage choice: ", rnd)
-            if rnd == 1:
+            if 74 > elev > 16:
+            # if rnd == 1:
 
                 for i in range(len(gtImg)):
 
@@ -291,7 +271,7 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_xyd/val/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/tless_generalize/val/' + imgNam
                 # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
@@ -349,7 +329,7 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_xyd/train/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/tless_generalize/train/' + imgNam
                 # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
@@ -394,8 +374,8 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         dictVal["categories"].append(tempC)
 
-    valAnno = "/home/sthalham/data/T-less_Detectron/tless_test_xyd/annotations/instances_val_tless.json"
-    trainAnno = "/home/sthalham/data/T-less_Detectron/tless_test_xyd/annotations/instances_train_tless.json"
+    valAnno = "/home/sthalham/data/T-less_Detectron/tless_generalize/annotations/instances_val_tless.json"
+    trainAnno = "/home/sthalham/data/T-less_Detectron/tless_generalize/annotations/instances_train_tless.json"
 
     with open(valAnno, 'w') as fpV:
         json.dump(dictVal, fpV)
