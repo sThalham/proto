@@ -17,11 +17,90 @@ import pandas as pd
 import tensorflow as tf
 
 
+def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
+
+    rows, cols, channels = normals.shape
+
+    # calculate disparity
+    depthFloor = 100.0
+    depthCeil = 1000.0
+
+    disparity = np.ones((depth.shape), dtype=np.float32)
+    disparity = np.divide(disparity, depth)
+    disparity = disparity - (1 / depthCeil)
+    denom = (1 / depthFloor) - (1 / depthCeil)
+    disparity = np.divide(disparity, denom)
+    disparity = np.where(np.isinf(disparity), 0.0, disparity)
+    dispSca = disparity - np.nanmin(disparity)
+    maxV = 255.0 / np.nanmax(dispSca)
+    scatemp = np.multiply(dispSca, maxV)
+    disp_final = scatemp.astype(np.uint8)
+
+    # compute height
+    depRe = depth.reshape(rows * cols)
+    zP = np.multiply(depRe, ds)
+    x, y = np.meshgrid(np.arange(0, cols, 1), np.arange(0, rows, 1), indexing='xy')
+    yP = y.reshape(rows * cols) - cy
+    xP = x.reshape(rows * cols) - cx
+    yP = np.multiply(yP, zP)
+    xP = np.multiply(xP, zP)
+    yP = np.divide(yP, fy)
+    xP = np.divide(xP, fx)
+
+    cloud = np.transpose(np.array((xP, yP, zP)))
+
+    zFloor = 0.0
+    zCeil = 1000
+
+    R_cam = np.asarray(R_w2c).reshape(3, 3)
+    camPoints = np.transpose(np.matmul(R_cam, np.transpose(cloud))) + np.tile(T_w2c, cloud.shape[0]).reshape(
+        cloud.shape[0], 3)
+    height = camPoints[:, 2] - zFloor
+    denom = zCeil - zFloor
+    height = np.divide(height, denom)
+    height = height.reshape(rows, cols)
+    height = height - np.nanmin(height)
+    scatemp = np.multiply(height, 255.0)
+    height_final = scatemp.astype(np.uint8)
+    height_final = np.where(height_final <= 0.0, 0.0, height_final)
+
+    # compute gravity vector deviation
+    angEst = np.zeros(normals.shape, dtype=np.float32)
+    angEst[:, :, 0] = R_cam[0, 2]
+    angEst[:, :, 1] = R_cam[1, 2]
+    angEst[:, :, 2] = -R_cam[2, 2]
+
+    angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
+    angEstNorm = np.linalg.norm(angEst, axis=2)
+    normalsNorm = np.linalg.norm(normals, axis=2)
+    normalize = np.multiply(normalsNorm, angEstNorm)
+    angDif = np.divide(angtemp, normalize)
+
+    np.where(angDif < 0.0, angDif + 1.0, angDif)
+    angDif = np.arccos(angDif)
+    angDif = np.multiply(angDif, (180 / math.pi))
+
+    angDifSca = angDif - np.nanmin(angDif)
+    maxV = 255.0 / np.nanmax(angDifSca)
+    scatemp = np.multiply(angDifSca, maxV)
+    grav_final = scatemp.astype(np.uint8)
+    grav_final[grav_final is np.NaN] = 0
+
+    # encode
+    encoded = np.zeros((normals.shape), dtype=np.uint8)
+    encoded[:, :, 0] = disp_final
+    encoded[:, :, 1] = height_final
+    encoded[:, :, 2] = grav_final
+
+    return encoded
+
+
 def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     res_y = depth_refine.shape[0]
     res_x = depth_refine.shape[1]
 
     # inpainting
+    '''
     scaleOri = np.amax(depth_refine)
     inPaiMa = np.where(depth_refine == 0.0, 255, 0)
     inPaiMa = inPaiMa.astype(np.uint8)
@@ -33,6 +112,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     rangeD = np.amax(depNorm)
     depNorm = np.divide(depNorm, rangeD)
     depth_refine = np.multiply(depNorm, scaleOri)
+    '''
 
     centerX = cx
     centerY = cy
@@ -187,13 +267,11 @@ if __name__ == "__main__":
             K = calib["cam_K"]
             depSca = calib["depth_scale"]
             fxkin = K[0]
-            # print(fx)
             fykin = K[4]
-            # print(fy)
             cxx = K[2]
-            # print(cx)
             cyy = K[5]
-            # print(cy)
+            cam_R = calib["cam_R_w2c"]
+            cam_T = calib["cam_t_w2c"]
 
             #########################
             # Prepare the stuff
@@ -207,29 +285,12 @@ if __name__ == "__main__":
 
             normImg = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxx, cy=cyy, for_vis=True)
 
-            normImg = np.multiply(normImg, 255.0)
-            imgI = normImg.astype(np.uint8)
-
-            # 3rd channel to be depth
-            # inpainting
-            scaleOri = np.amax(depImg)
-            inPaiMa = np.where(depImg == 0.0, 255, 0)
-            inPaiMa = inPaiMa.astype(np.uint8)
-            inPaiDia = 5.0
-            depImg = depImg.astype(np.float32)
-            depPaint = cv2.inpaint(depImg, inPaiMa, inPaiDia, cv2.INPAINT_NS)
-
-
-            depNorm = depPaint - np.amin(depPaint)
-            rangeD = np.amax(depNorm)
-            depNorm = np.divide(depNorm, rangeD)
-            depImg = np.multiply(depNorm, scaleOri)
-
-            scaDep = 255.0 / np.amax(depImg)
-            depScaled = np.multiply(depImg, scaDep)
-            depInt = depScaled.astype(np.uint8)
-
-            imgI[:, :, 2] = depInt
+            encoded = HHA_encoding(depImg, normImg, fxkin, fykin, cxx, cyy, depSca, cam_R, cam_T)
+            imgI = encoded
+            cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
+            cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
+            cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
+            cv2.imwrite('/home/sthalham/HHA.png', encoded)
 
             # create image number and name
             template = '00000'
@@ -291,7 +352,7 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_xyd/val/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_HHA/val/' + imgNam
                 # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
@@ -349,7 +410,7 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_xyd/train/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_HHA/train/' + imgNam
                 # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
@@ -394,8 +455,8 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         dictVal["categories"].append(tempC)
 
-    valAnno = "/home/sthalham/data/T-less_Detectron/tless_test_xyd/annotations/instances_val_tless.json"
-    trainAnno = "/home/sthalham/data/T-less_Detectron/tless_test_xyd/annotations/instances_train_tless.json"
+    valAnno = "/home/sthalham/data/T-less_Detectron/tless_test_HHA/annotations/instances_val_tless.json"
+    trainAnno = "/home/sthalham/data/T-less_Detectron/tless_test_HHA/annotations/instances_train_tless.json"
 
     with open(valAnno, 'w') as fpV:
         json.dump(dictVal, fpV)

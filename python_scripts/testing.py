@@ -29,71 +29,113 @@ def create_point_cloud(depth, fx, fy, cx, cy, ds):
 
     rows, cols = depth.shape
 
-    fros = 580.0
+    depRe = depth.reshape(rows * cols)
+    zP = np.multiply(depRe, ds)
 
-    npCloud = []
-    for r in range(0, rows):
-        for c in range(0, cols):
-            z = depth[r, c] * ds * 0.001
+    x, y = np.meshgrid(np.arange(0, cols, 1), np.arange(0, rows, 1), indexing='xy')
+    yP = y.reshape(rows * cols) - cy
+    xP = x.reshape(rows * cols) - cx
+    yP = np.multiply(yP, zP)
+    xP = np.multiply(xP, zP)
+    yP = np.divide(yP, fy)
+    xP = np.divide(xP, fx)
 
-            xN = (c - cx) * z / fx
-            yN = (r - cy) * z / fy
-            point = np.array((xN, yN, z))
-            npCloud.append(point)
+    cloud_final = np.transpose(np.array((xP, yP, zP)))
 
-    return np.array(npCloud)
+    return cloud_final
+
+
+def compute_height(cloud, y, x, R_w2c, T_w2c):
+
+    zFloor = 0.0
+    zCeil = 1000
+
+    cam2world = R_w2c
+    camPoints = np.transpose(np.matmul(cam2world, np.transpose(cloud))) + np.tile(T_w2c, cloud.shape[0]).reshape(cloud.shape[0], 3)
+
+    height = camPoints[:, 2] - zFloor
+    denom = zCeil - zFloor
+    height = np.divide(height, denom)
+
+    height = np.where(height <= 0.0, 0.0, height)
+    height = height.reshape(y, x)
+
+    height = height - np.nanmin(height)
+    scatemp = np.multiply(height, 255.0)
+    height_final = scatemp.astype(np.uint8)
+
+    return height_final
+
+
+def comp_disp(depth):
+
+    depthFloor = 100.0
+    depthCeil = 1000.0
+
+    disparity = np.ones((depth.shape), dtype=np.float32)
+    print(disparity.shape)
+    disparity = np.divide(disparity, depth)
+    disparity = disparity - (1/depthCeil)
+    denom = (1/depthFloor) - (1/depthCeil)
+    disparity = np.divide(disparity, denom)
+    disparity = np.where(np.isinf(disparity), 0.0, disparity)
+
+    dispSca = disparity - np.nanmin(disparity)
+    maxV = 255.0 / np.nanmax(dispSca)
+    scatemp = np.multiply(dispSca, maxV)
+    disp_final = scatemp.astype(np.uint8)
+
+    return disp_final
 
 
 def geoCooFrame(normals):
 
     r, c, p = normals.shape
+
     angEst = np.zeros(normals.shape, dtype=np.float32)
-    angEst[:, : ,2] = 1.0
-
-    ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0)
-
+    angEst[:, :, 2] = 1.0
+    ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0, 5.0, 5.0)
     for th in ang:
-        NyPar = []
-        NyOrt = []
-        for x in range(len(normals[1, :, 1])):
-            for y in range(len(normals[:, 1, 1])):
-                if not np.any(normals[y, x, :]):
-                    continue
 
-                angtemp = np.dot(normals[y, x, :], angEst[y, x, :]) / (np.linalg.norm(angEst[y, x, :]) * np.linalg.norm(normals[y, x, :]))
-                if angtemp < 0.0:
-                    angtemp = angtemp + 1.0
-                if angtemp > math.pi:
-                    angtemp = angtemp - 1.0
-                angtemp = math.acos(angtemp) * (180/math.pi)
+        angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
+        angEstNorm = np.linalg.norm(angEst, axis=2)
+        normalsNorm = np.linalg.norm(normals, axis=2)
+        normalize = np.multiply(normalsNorm, angEstNorm)
+        angDif = np.divide(angtemp, normalize)
 
-                if angtemp < th or angtemp > (180.0 - th):
-                    NyPar.append(normals[y, x, :])
-                else:
-                    NyOrt.append(normals[y, x, :])
+        np.where(angDif < 0.0, angDif + 1.0, angDif)
+        angDif = np.arccos(angDif)
+        angDif = np.multiply(angDif, (180/math.pi))
 
-        NyPar = np.asarray(NyPar, dtype=np.float32)
-        NyOrt = np.asarray(NyOrt, dtype=np.float32)
+        cond1 = (angDif < th)
+        cond1_ = (angDif > (180.0 - th))
+        cond2 = (angDif > (90.0 - th)) & (angDif < (90.0 + th))
+        cond1 = np.repeat(cond1[:, :, np.newaxis], 3, axis=2)
+        cond1_ = np.repeat(cond1_[:, :, np.newaxis], 3, axis=2)
+        cond2 = np.repeat(cond2[:, :, np.newaxis], 3, axis=2)
+
+        NyPar1 = np.extract(cond1, normals)
+        NyPar2 = np.extract(cond1_, normals)
+        NyPar = np.concatenate((NyPar1, NyPar2))
+        npdim = (NyPar.shape[0] / 3)
+        NyPar = np.reshape(NyPar, (int(npdim), 3))
+        NyOrt = np.extract(cond2, normals)
+        nodim = (NyOrt.shape[0] / 3)
+        NyOrt = np.reshape(NyOrt, (int(nodim), 3))
+
         cov = (np.transpose(NyOrt)).dot(NyOrt) - (np.transpose(NyPar)).dot(NyPar)
         u, s, vh = np.linalg.svd(cov)
+        angEst = np.tile(u[:, 2], r * c).reshape((r, c, 3))
 
-        angEst = np.tile(u[:, 2], r*c).reshape((r, c, 3))
+    angDifSca = angDif - np.nanmin(angDif)
+    maxV = 255.0 / np.nanmax(angDifSca)
+    scatemp = np.multiply(angDifSca, maxV)
+    gImg = scatemp.astype(np.uint8)
+    gImg[gImg is np.NaN] = 0
+    print(np.nanmax(gImg))
+    print(np.nanmin(gImg))
 
-    gImg = np.zeros((r, c), dtype=np.float)
-    for x in range(len(normals[1, :, 1])):
-        for y in range(len(normals[:, 1, 1])):
-            angtemp = np.dot(normals[y, x, :], angEst[y, x, :]) / (
-                        np.linalg.norm(angEst[y, x, :]) * np.linalg.norm(normals[y, x, :]))
-            if angtemp < 0.0:
-                angtemp = angtemp + 1.0
-            if angtemp > math.pi:
-                angtemp = angtemp - 1.0
-            angtemp = math.acos(angtemp) * (180 / math.pi)
-            gImg[y, x] = angtemp
-
-    cv2.imwrite('/home/sthalham/gravImg.png', gImg)
-
-    return normals
+    return gImg
 
 
 def roundPartial(value, resolution):
@@ -157,7 +199,7 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
 
     onethird = cv2.resize(depth, None, fx=1/3, fy=1/3, interpolation=cv2.INTER_AREA)
 
-    onethird = cv2.GaussianBlur(onethird, (5, 5), 0.6, 0.6)
+    onethird = cv2.GaussianBlur(onethird, (5, 5), 0.75, 0.75)
 
 
     # round to depth resolution
@@ -244,6 +286,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     res_x = depth_refine.shape[1]
 
     # inpainting
+    '''
     scaleOri = np.amax(depth_refine)
     inPaiMa = np.where(depth_refine == 0.0, 255, 0)
     inPaiMa = inPaiMa.astype(np.uint8)
@@ -255,6 +298,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     rangeD = np.amax(depNorm)
     depNorm = np.divide(depNorm, rangeD)
     depth_refine = np.multiply(depNorm, scaleOri)
+    '''
 
     centerX = cx
     centerY = cy
@@ -293,7 +337,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     cam_angle = np.arccos(cross[:, :, 2])
     #cross[np.abs(cam_angle) > math.radians(75)] = 0  # high normal cut
     #cross[depth_refine <= 100] = 0  # 0 and near range cut
-    cross[depth_refine > 1500] = 0  # far range cut
+    cross[depth_refine > 1000] = np.NaN  # far range cut
     if not for_vis:
         cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
         cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
@@ -325,30 +369,53 @@ if __name__ == "__main__":
 
     fkinx = 1076.74
     fkiny = 1075.18
+    cam_R_w2c = np.array([[-0.990781, 0.135477, -0.00023996],[0.0560823, 0.408533, -0.911019], [-0.123324, -0.902633, -0.412365]])
+    cam_T_w2c = np.array([-3.62461, -0.291907, 788.726])
+    cam_K = np.array([1076.74064739, 0.0, 364.98264967, 0.0, 1075.17825536, 301.59181836, 0.0, 0.0, 1.0])
+    ckinx = 364.98264967
+    ckiny = 301.59181836
     normImg = get_normal(compare, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    normImg = np.multiply(normImg, 255.0)
-    imgI = normImg.astype(np.uint8)
-    #cv2.imwrite('/home/sthalham/normkin_19_0412.png', imgI)
+    grav = geoCooFrame(normImg)
+    cv2.imwrite('/home/sthalham/gravReal1.png', grav)
+
+    disparity = comp_disp(compare)
+    cv2.imwrite('/home/sthalham/dispReal.png', disparity)
+
+    pCloud = create_point_cloud(compare, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
+    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
+    cv2.imwrite('/home/sthalham/heightReal1.png', heightImg)
 
     normImg = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    normImg = np.multiply(normImg, 255.0)
-    imgI = normImg.astype(np.uint8)
-    #cv2.imwrite('/home/sthalham/normkin_9_0117.png', imgI)
+    grav = geoCooFrame(normImg)
+    cv2.imwrite('/home/sthalham/gravReal2.png', grav)
+
+    pCloud = create_point_cloud(compare1, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
+    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
+    cv2.imwrite('/home/sthalham/heightReal2.png', heightImg)
 
     normImg = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    normImg = np.multiply(normImg, 255.0)
-    imgI = normImg.astype(np.uint8)
-    #cv2.imwrite('/home/sthalham/normkin_13_0079.png', imgI)
+    grav = geoCooFrame(normImg)
+    cv2.imwrite('/home/sthalham/gravReal3.png', grav)
+
+    pCloud = create_point_cloud(compare3, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
+    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
+    cv2.imwrite('/home/sthalham/heightReal3.png', heightImg)
 
     normImg = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    normImg = np.multiply(normImg, 255.0)
-    imgI = normImg.astype(np.uint8)
-    #cv2.imwrite('/home/sthalham/normkin_4_0291.png', imgI)
+    grav = geoCooFrame(normImg)
+    cv2.imwrite('/home/sthalham/gravReal4.png', grav)
+
+    pCloud = create_point_cloud(compare3, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
+    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
+    cv2.imwrite('/home/sthalham/heightReal4.png', heightImg)
 
     normImg = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    normImg = np.multiply(normImg, 255.0)
-    imgI = normImg.astype(np.uint8)
-    #cv2.imwrite('/home/sthalham/normkin_16_0205.png', imgI)
+    grav = geoCooFrame(normImg)
+    cv2.imwrite('/home/sthalham/gravReal5.png', grav)
+
+    pCloud = create_point_cloud(compare4, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
+    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
+    cv2.imwrite('/home/sthalham/heightReal5.png', heightImg)
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -378,9 +445,9 @@ if __name__ == "__main__":
     for fileInd in os.listdir(root):
         if fileInd.endswith(".yaml"):
             redname = fileInd[:-8]
-            print(str(redname))
-            if redname != "00000019":
-                continue
+            #print(str(redname))
+            #if redname != "00000019":
+            #    continue
             gtfile = gtPath + '/' + fileInd
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
@@ -424,6 +491,10 @@ if __name__ == "__main__":
             cv2.imwrite('/home/sthalham/normarti.png', imgI)
 
             grav = geoCooFrame(normImg)
+            cv2.imwrite('/home/sthalham/gravArti.png', grav)
+
+            disparity = comp_disp(depth_refine)
+            cv2.imwrite('/home/sthalham/dispArti.png', disparity)
 
             '''
 

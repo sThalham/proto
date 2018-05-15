@@ -95,7 +95,7 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     std-dev(mm) calib:   x = y = 10, z = 18
     std-dev(mm) uncalib: x = 14, y = 15, z = 18
     '''
-    noise = np.multiply(dNonVar, 0.004)
+    noise = np.multiply(dNonVar, 0.0025)
     depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
 
     # depthFinal = cv2.GaussianBlur(depthFinal, (9, 9), 2.0, 2.0)  # only god knows why
@@ -236,182 +236,85 @@ if __name__ == "__main__":
 
             rows, cols = depth_refine.shape
 
-            addNoise = (1.5, 2.0, 2.5, 3.0)
-            prepo = (1,2,3,4)
+            newredname = redname
 
-            for ind, curNoise in enumerate(addNoise):
+            focalL = 580.0  # according to microsoft
+            normImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5), for_vis=True)
 
-                newredname = str(prepo[ind]) + redname
-
-                focalL = 580.0  # according to microsoft
-                normImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5), for_vis=True)
-
-                normImg = np.multiply(normImg, 255.0)
-                imgI = normImg.astype(np.uint8)
+            normImg = np.multiply(normImg, 255.0)
+            imgI = normImg.astype(np.uint8)
 
                 #drawN = [1, 1, 1, 1, 2]
                 #freq = np.bincount(drawN)
                 #rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
-                rnd = 1
+            rnd = 1
 
                 # change drawN if you want a data split
                 # print("storage choice: ", rnd)
-                if rnd == 1:
+            if rnd == 1:
 
-                    imgPath = '/home/sthalham/data/T-less_Detectron/tlessArti10052018/train/' + newredname + '.jpg'
-                    imgID = int(newredname)
-                    imgName = newredname + '.jpg'
+                imgPath = '/home/sthalham/data/T-less_Detectron/tlessArti13052018/train/' + newredname + '.jpg'
+                imgID = int(newredname)
+                imgName = newredname + '.jpg'
 
-                    for bbox in bboxes:
-                        objID = np.asscalar(bbox[0]) + 1
-                        x1 = np.asscalar(bbox[2])
-                        y1 = np.asscalar(bbox[1])
-                        x2 = np.asscalar(bbox[4])
-                        y2 = np.asscalar(bbox[3])
-                        nx1 = bbox[2]
-                        ny1 = bbox[1]
-                        nx2 = bbox[4]
-                        ny2 = bbox[3]
-                        w = (x2-x1)
-                        h = (y2-y1)
-                        bb = [x1, y1, w, h]
-                        area = w * h
-                        npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
-                        seg = npseg.tolist()
+                for bbox in bboxes:
+                    objID = np.asscalar(bbox[0]) + 1
+                    x1 = np.asscalar(bbox[2])
+                    y1 = np.asscalar(bbox[1])
+                    x2 = np.asscalar(bbox[4])
+                    y2 = np.asscalar(bbox[3])
+                    nx1 = bbox[2]
+                    ny1 = bbox[1]
+                    nx2 = bbox[4]
+                    ny2 = bbox[3]
+                    w = (x2-x1)
+                    h = (y2-y1)
+                    bb = [x1, y1, w, h]
+                    area = w * h
+                    npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
+                    seg = npseg.tolist()
 
-                        annoID = annoID + 1
-                        tempTA = {
-                            "id": annoID,
-                            "image_id": imgID,
-                            "category_id": objID,
-                            "bbox": bb,
-                            "segmentation": [seg],
-                            "area": area,
-                            "iscrowd": 0
-                        }
-                        dict["annotations"].append(tempTA)
+                    annoID = annoID + 1
+                    tempTA = {
+                        "id": annoID,
+                        "image_id": imgID,
+                        "category_id": objID,
+                        "bbox": bb,
+                        "segmentation": [seg],
+                        "area": area,
+                        "iscrowd": 0
+                    }
+                    dict["annotations"].append(tempTA)
 
-                        '''
-                        cv2.rectangle(imgI, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        bottomLeftCornerOfText = (int(bb[0]), int(bb[1]))
-                        fontScale = 1
-                        fontColor = (255, 0, 0)
-                        lineType = 2
-                        gtText = 'cat: ' + str(objID)
-                        cv2.putText(imgI, gtText,
-                                bottomLeftCornerOfText,
-                                font,
-                                fontScale,
-                                fontColor,
-                                lineType)
-                        '''
-
-                    cv2.imwrite(imgPath, imgI)
+                cv2.imwrite(imgPath, imgI)
                     #cv2.imwrite('/home/sthalham/artitest25.jpg', imgI)
 
                     # print("storing in test: ", imgName)
 
-                    tempTL = {
-                        "url": "cmp.felk.cvut.cz/t-less/",
-                        "id": imgID,
-                        "name": imgName
-                    }
-                    dict["licenses"].append(tempTL)
+                tempTL = {
+                    "url": "cmp.felk.cvut.cz/t-less/",
+                    "id": imgID,
+                    "name": imgName
+                }
+                dict["licenses"].append(tempTL)
 
-                    tempTV = {
-                        "license": 2,
-                        "url": "cmp.felk.cvut.cz/t-less/",
-                        "file_name": imgName,
-                        "height": rows,
-                        "width": cols,
-                        "date_captured": dateT,
-                        "id": imgID
-                    }
-                    dict["images"].append(tempTV)
+                tempTV = {
+                    "license": 2,
+                    "url": "cmp.felk.cvut.cz/t-less/",
+                    "file_name": imgName,
+                    "height": rows,
+                    "width": cols,
+                    "date_captured": dateT,
+                    "id": imgID
+                }
+                dict["images"].append(tempTV)
 
-                else:
-                    imgPath = '/home/sthalham/data/T-less_Detectron/tlessArti24042018_split/val/' + redname + '.jpg'
-                    imgID = int(redname)
-                    imgName = redname + '.jpg'
-
-                    # create dictionaries for json
-                    for bbox in bboxes:
-                        objID = np.asscalar(bbox[0]) + 1
-                        x1 = np.asscalar(bbox[2])
-                        y1 = np.asscalar(bbox[1])
-                        x2 = np.asscalar(bbox[4])
-                        y2 = np.asscalar(bbox[3])
-                        nx1 = bbox[2]
-                        ny1 = bbox[1]
-                        nx2 = bbox[4]
-                        ny2 = bbox[3]
-                        w = (x2-x1)
-                        h = (y2-y1)
-                        bb = [x1, y1, w, h]
-                        area = w * h
-                        npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
-                        seg = npseg.tolist()
-
-                        annoID = annoID + 1
-                        tempVA = {
-                            "id": annoID,
-                            "image_id": imgID,
-                            "category_id": objID,
-                            "bbox": bb,
-                            "segmentation": [seg],
-                            "area": area,
-                            "iscrowd": 0
-                        }
-                        dictVal["annotations"].append(tempVA)
-
-                    cv2.imwrite(imgPath, imgI)
-                    # cv2.imwrite('/home/sthalham/artitest.jpg', imgI)
-
-                    # print("storing in test: ", imgName)
-
-                    tempVL = {
-                        "url": "cmp.felk.cvut.cz/t-less/",
-                        "id": imgID,
-                        "name": imgName
-                    }
-                    dictVal["licenses"].append(tempVL)
-
-                    tempVI = {
-                        "license": 2,
-                        "url": "cmp.felk.cvut.cz/t-less/",
-                        "file_name": imgName,
-                        "height": rows,
-                        "width": cols,
-                        "date_captured": dateT,
-                        "id": imgID
-                    }
-                    dictVal["images"].append(tempVI)
-
-                elapsed_time = time.time() - start_time
-                times.append(elapsed_time)
-                meantime = sum(times)/len(times)
-                eta = ((all - gloCo) * meantime) / 60
-                if gloCo % 100 == 0:
-                    print('eta: ', eta, ' min')
-
-        # if counter > 1:
-        #     catsInt = range(1, 30)
-        #     for s in catsInt:
-        #         objName = str(s)
-        #         print(s)
-        #         print(objName)
-        #         tempC = {
-        #             "id": s,
-        #             "name": objName,
-        #             "supercategory": "object"
-        #         }
-        #         dict["categories"].append(tempC)
-        #     trainAnno = "/home/sthalham/test.json"
-        #     with open(trainAnno, 'w') as fp:
-        #         json.dump(dict, fp)
-
-        #     sys.exit()
+            elapsed_time = time.time() - start_time
+            times.append(elapsed_time)
+            meantime = sum(times)/len(times)
+            eta = ((all - gloCo) * meantime) / 60
+            if gloCo % 100 == 0:
+                print('eta: ', eta, ' min')
 
     catsInt = range(1, 31)
 
@@ -423,7 +326,7 @@ if __name__ == "__main__":
             "supercategory": "object"
         }
         dict["categories"].append(tempC)
-        dictVal["categories"].append(tempC)
+        #dictVal["categories"].append(tempC)
 
     traAnno = "/home/sthalham/data/T-less_Detectron/tlessArti10052018/annotations/instances_train_tless.json"
     #valAnno = "/home/sthalham/data/T-less_Detectron/tlessArti24042018_split/annotations/instances_val_tless.json"
