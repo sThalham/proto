@@ -25,6 +25,85 @@ focalLy = 542.31  # blender calculated
 
 np.set_printoptions(threshold=np.nan)
 
+
+def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
+
+    rows, cols, channels = normals.shape
+
+    # calculate disparity
+    depthFloor = 100.0
+    depthCeil = 1000.0
+
+    disparity = np.ones((depth.shape), dtype=np.float32)
+    disparity = np.divide(disparity, depth)
+    disparity = disparity - (1 / depthCeil)
+    denom = (1 / depthFloor) - (1 / depthCeil)
+    disparity = np.divide(disparity, denom)
+    disparity = np.where(np.isinf(disparity), 0.0, disparity)
+    dispSca = disparity - np.nanmin(disparity)
+    maxV = 255.0 / np.nanmax(dispSca)
+    scatemp = np.multiply(dispSca, maxV)
+    disp_final = scatemp.astype(np.uint8)
+
+    # compute height
+    depRe = depth.reshape(rows * cols)
+    zP = np.multiply(depRe, ds)
+    x, y = np.meshgrid(np.arange(0, cols, 1), np.arange(0, rows, 1), indexing='xy')
+    yP = y.reshape(rows * cols) - cy
+    xP = x.reshape(rows * cols) - cx
+    yP = np.multiply(yP, zP)
+    xP = np.multiply(xP, zP)
+    yP = np.divide(yP, fy)
+    xP = np.divide(xP, fx)
+
+    cloud = np.transpose(np.array((xP, yP, zP)))
+
+    zFloor = 0.0
+    zCeil = 1000
+
+    R_cam = np.asarray(R_w2c).reshape(3, 3)
+    camPoints = np.transpose(np.matmul(R_cam, np.transpose(cloud))) + np.tile(T_w2c, cloud.shape[0]).reshape(
+        cloud.shape[0], 3)
+    height = camPoints[:, 2] - zFloor
+    denom = zCeil - zFloor
+    height = np.divide(height, denom)
+    height = height.reshape(rows, cols)
+    height = height - np.nanmin(height)
+    scatemp = np.multiply(height, 255.0)
+    height_final = scatemp.astype(np.uint8)
+    height_final = np.where(height_final <= 0.0, 0.0, height_final)
+
+    # compute gravity vector deviation
+    angEst = np.zeros(normals.shape, dtype=np.float32)
+    angEst[:, :, 0] = R_cam[0, 2]
+    angEst[:, :, 1] = R_cam[1, 2]
+    angEst[:, :, 2] = -R_cam[2, 2]
+
+    angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
+    angEstNorm = np.linalg.norm(angEst, axis=2)
+    normalsNorm = np.linalg.norm(normals, axis=2)
+    normalize = np.multiply(normalsNorm, angEstNorm)
+    angDif = np.divide(angtemp, normalize)
+
+    np.where(angDif < 0.0, angDif + 1.0, angDif)
+    angDif = np.arccos(angDif)
+    angDif = np.multiply(angDif, (180 / math.pi))
+
+    angDifSca = angDif - np.nanmin(angDif)
+    maxV = 255.0 / np.nanmax(angDifSca)
+    scatemp = np.multiply(angDifSca, maxV)
+    grav_final = scatemp.astype(np.uint8)
+    grav_final[grav_final is np.NaN] = 0
+
+    # encode
+    encoded = np.zeros((normals.shape), dtype=np.uint8)
+    encoded[:, :, 0] = disp_final
+    encoded[:, :, 1] = height_final
+    encoded[:, :, 2] = grav_final
+
+    return encoded
+
+
 def create_point_cloud(depth, fx, fy, cx, cy, ds):
 
     rows, cols = depth.shape

@@ -100,7 +100,6 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     res_x = depth_refine.shape[1]
 
     # inpainting
-    '''
     scaleOri = np.amax(depth_refine)
     inPaiMa = np.where(depth_refine == 0.0, 255, 0)
     inPaiMa = inPaiMa.astype(np.uint8)
@@ -112,7 +111,6 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     rangeD = np.amax(depNorm)
     depNorm = np.divide(depNorm, rangeD)
     depth_refine = np.multiply(depNorm, scaleOri)
-    '''
 
     centerX = cx
     centerY = cy
@@ -167,7 +165,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
         cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
         cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
 
-    return cross
+    return cross, depth_refine
 
 
 def create_BB(rgb):
@@ -283,9 +281,9 @@ if __name__ == "__main__":
             depImg = np.multiply(depImg, 0.1)
             rows, cols = depImg.shape
 
-            normImg = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxx, cy=cyy, for_vis=True)
+            normImg, depth_inpaint = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxx, cy=cyy, for_vis=True)
 
-            encoded = HHA_encoding(depImg, normImg, fxkin, fykin, cxx, cyy, depSca, cam_R, cam_T)
+            encoded = HHA_encoding(depth_inpaint, normImg, fxkin, fykin, cxx, cyy, depSca, cam_R, cam_T)
             imgI = encoded
             cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
             cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
@@ -352,7 +350,7 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_HHA/val/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_HHA_in/val/' + imgNam
                 # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
@@ -410,7 +408,7 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_HHA/train/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/tless_test_HHA_in/train/' + imgNam
                 # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
@@ -455,8 +453,8 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         dictVal["categories"].append(tempC)
 
-    valAnno = "/home/sthalham/data/T-less_Detectron/tless_test_HHA/annotations/instances_val_tless.json"
-    trainAnno = "/home/sthalham/data/T-less_Detectron/tless_test_HHA/annotations/instances_train_tless.json"
+    valAnno = "/home/sthalham/data/T-less_Detectron/tless_test_HHA_in/annotations/instances_val_tless.json"
+    trainAnno = "/home/sthalham/data/T-less_Detectron/tless_test_HHA_in/annotations/instances_train_tless.json"
 
     with open(valAnno, 'w') as fpV:
         json.dump(dictVal, fpV)
