@@ -112,8 +112,8 @@ def getVisibleBoundingBox(objectPassIndex):
 base_dir = "/home/sthalham/data/t-less_mani/t-less_scaled"
 total_set = 10000 #10000 set of scenes, each set has identical objects with varied poses to anchor pose (+-15)
 pair_set = 10 #number of pair scene for each set, 10
-sample_dir = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes02052018' #directory for temporary files (cam_L, cam_R, masks..~)
-target_dir = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes02052018/patches'
+sample_dir = '/home/sthalham/data/t-less_mani/proto/renderedScenes17052018' #directory for temporary files (cam_L, cam_R, masks..~)
+target_dir = '/home/sthalham/data/t-less_mani/proto/renderedScenes17052018/patches'
 index=0
 isfile=True
 while isfile:
@@ -472,7 +472,15 @@ for num_set in np.arange(total_set):
 
       masksT = []
       boxesT = []
+      #camOrientation = np.array(bpy.data.objects['cam_L'].matrix_world).reshape(-1)
+      camOrientation =np.zeros((4,4),dtype=np.float)
+      camOrientation[3,3]=1.0
+      camOrientation[:3,3] = cam_trans
+      camOrientation[:3,:3] = world_rot[:3,:3]
+      camOrientation = np.linalg.inv(camOrientation)
       with open(os.path.join(target_dir,prefix+'gt.yaml'),'w') as f:
+        camOri={'camera_rot':camOrientation.tolist()}
+        yaml.dump(camOri,f)
         for i in np.arange(len(object_no)):
           pose = poses[i]
           pose = np.matmul(world_trans,pose)

@@ -10,8 +10,8 @@ import datetime
 import copy
 import transforms3d as tf3d
 import itertools
-from pcl import pcl_visualization
 import pcl
+from pcl import pcl_visualization
 
 import OpenEXR, Imath
 
@@ -29,6 +29,7 @@ np.set_printoptions(threshold=np.nan)
 def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
 
     rows, cols, channels = normals.shape
+    mask = depth < 1000.0
 
     # calculate disparity
     depthFloor = 100.0
@@ -44,6 +45,7 @@ def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
     maxV = 255.0 / np.nanmax(dispSca)
     scatemp = np.multiply(dispSca, maxV)
     disp_final = scatemp.astype(np.uint8)
+    disp_final = np.where(mask, disp_final, 0)
 
     # compute height
     depRe = depth.reshape(rows * cols)
@@ -72,6 +74,7 @@ def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
     scatemp = np.multiply(height, 255.0)
     height_final = scatemp.astype(np.uint8)
     height_final = np.where(height_final <= 0.0, 0.0, height_final)
+    height_final = np.where(mask, height_final, 0)
 
     # compute gravity vector deviation
     angEst = np.zeros(normals.shape, dtype=np.float32)
@@ -89,11 +92,16 @@ def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
     angDif = np.arccos(angDif)
     angDif = np.multiply(angDif, (180 / math.pi))
 
+    print(np.nanmax(angDif))
+    print(np.nanmin(angDif))
+
+    angDif = np.where(mask, angDif, np.NaN)
     angDifSca = angDif - np.nanmin(angDif)
     maxV = 255.0 / np.nanmax(angDifSca)
     scatemp = np.multiply(angDifSca, maxV)
     grav_final = scatemp.astype(np.uint8)
     grav_final[grav_final is np.NaN] = 0
+    grav_final = np.where(mask, grav_final, 0)
 
     # encode
     encoded = np.zeros((normals.shape), dtype=np.uint8)
@@ -230,7 +238,7 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
         bboxes = np.zeros((len(query), 5), np.int)
         poses = np.zeros((len(query), 7), np.float32)
         mask_ids = np.zeros((len(query)), np.int)
-        for j in range(len(query)):
+        for j in range(len(query)-1):
             qr = query[j]
             class_id = qr['class_id']
             bbox = qr['bbox']
@@ -283,11 +291,8 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
 
     # round to depth resolution
     # should be correct... is applied to depth itself
-    #res = (((depth / 1000) * 1.41421356) ** 2) * 1000
     res = (((onethird / 1000) * 1.41421356) ** 2) * 1000
     depth = onethird
-
-
 
     # discretize to resolution and apply gaussian
     dNonVar = np.divide(depth, res, out=np.zeros_like(depth), where=res!=0)
@@ -301,54 +306,6 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     '''
     noise = np.multiply(dNonVar, 0.0025)
     depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
-
-    '''
-    # nguyen et al. sig_lat ~ 0.85 pixel
-    noisex = np.zeros((depth.shape), dtype=np.float32)
-    noisey = np.zeros((depth.shape), dtype=np.float32)
-    noisex = np.random.normal(loc=noisex, scale=0.0)
-    noisey = np.random.normal(loc=noisey, scale=0.0)
-    noisex = np.round(noisex)
-    noisey = np.round(noisey)
-    print(np.amax(noisex))
-    print(np.amin(noisex))
-    print(np.amax(noisey))
-    print(np.amin(noisey))
-
-    # apply lateral noise by sampling which pixels to choose
-    # vectorize?
-    rowsNow, colsNow = depth.shape
-    depthFinal = np.zeros((depth.shape), dtype=np.float32)
-    for (y, x), pixel in np.ndenumerate(depth):
-        indX = x+noisex[y, x]
-        indY = y+noisey[y, x]
-        indX = indX.astype(int)
-        indY = indY.astype(int)
-        if indX < 0:
-            indX = 0
-        if indX > (colsNow - 1):
-            indX = (colsNow - 1)
-        if indY < 0:
-            indY = 0
-        if indY > (rowsNow - 1):
-            indY = (rowsNow - 1)
-
-        rangeX = (x, indX)
-        rX = np.sort(rangeX)
-        rX[1] += 1
-        xr = rX.shape
-
-        rangeY = (y, indY)
-        rY = np.sort(rangeY)
-        rY[1] += 1
-        yr = rY.shape
-
-        print(rY[0], rY[yr[0]-1], rX[0], rX[xr[0]-1])
-        depthFinal[y, x] = np.mean(dMan[rY[0]:rY[yr[0]-1], rX[0]:rX[xr[0]-1]])
-
-    '''
-
-    # depthFinal = cv2.GaussianBlur(depthFinal, (9, 9), 2.0, 2.0)  # only god knows why
 
     # INTER_NEAREST - a nearest-neighbor interpolation
     # INTER_LINEAR - a bilinear interpolation (used by default)
@@ -430,21 +387,22 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
 ##########################
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
+    #root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
+    root = '/home/sthalham/data/t-less_mani/proto/renderedScenes17052018/patches'
     model = '/home/sthalham/workspace/python/src/model.yml.gz'
 
-    compare = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/19/depth/0412.png', -1)
-    compare1 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/09/depth/0117.png', -1)
-    compare2 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/13/depth/0079.png', -1)
-    compare3 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/04/depth/0291.png', -1)
-    compare4 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/16/depth/0205.png', -1)
+    compare1 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/19/depth/0412.png', -1)
+    compare2 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/09/depth/0117.png', -1)
+    compare3 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/13/depth/0079.png', -1)
+    compare4 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/04/depth/0291.png', -1)
+    compare5 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/16/depth/0205.png', -1)
 
-    rowcom, colcom = compare.shape
-    compare = np.multiply(compare, 0.1)
+    rowcom, colcom = compare1.shape
     compare1 = np.multiply(compare1, 0.1)
     compare2 = np.multiply(compare2, 0.1)
     compare3 = np.multiply(compare3, 0.1)
     compare4 = np.multiply(compare4, 0.1)
+    compare5 = np.multiply(compare5, 0.1)
 
     fkinx = 1076.74
     fkiny = 1075.18
@@ -453,48 +411,20 @@ if __name__ == "__main__":
     cam_K = np.array([1076.74064739, 0.0, 364.98264967, 0.0, 1075.17825536, 301.59181836, 0.0, 0.0, 1.0])
     ckinx = 364.98264967
     ckiny = 301.59181836
-    normImg = get_normal(compare, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    grav = geoCooFrame(normImg)
-    cv2.imwrite('/home/sthalham/gravReal1.png', grav)
-
-    disparity = comp_disp(compare)
-    cv2.imwrite('/home/sthalham/dispReal.png', disparity)
-
-    pCloud = create_point_cloud(compare, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
-    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
-    cv2.imwrite('/home/sthalham/heightReal1.png', heightImg)
-
     normImg = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    grav = geoCooFrame(normImg)
-    cv2.imwrite('/home/sthalham/gravReal2.png', grav)
-
-    pCloud = create_point_cloud(compare1, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
-    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
-    cv2.imwrite('/home/sthalham/heightReal2.png', heightImg)
+    encoded = HHA_encoding(compare1, normImg, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0, cam_R_w2c, cam_T_w2c)
+    cv2.imwrite('/home/sthalham/dispReal.png', encoded[:, :, 0])
+    cv2.imwrite('/home/sthalham/heiReal.png', encoded[:, :, 1])
+    cv2.imwrite('/home/sthalham/graReal.png', encoded[:, :, 2])
+    cv2.imwrite('/home/sthalham/HHAReal.png', encoded)
 
     normImg = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    grav = geoCooFrame(normImg)
-    cv2.imwrite('/home/sthalham/gravReal3.png', grav)
-
-    pCloud = create_point_cloud(compare3, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
-    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
-    cv2.imwrite('/home/sthalham/heightReal3.png', heightImg)
 
     normImg = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    grav = geoCooFrame(normImg)
-    cv2.imwrite('/home/sthalham/gravReal4.png', grav)
-
-    pCloud = create_point_cloud(compare3, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
-    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
-    cv2.imwrite('/home/sthalham/heightReal4.png', heightImg)
 
     normImg = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    grav = geoCooFrame(normImg)
-    cv2.imwrite('/home/sthalham/gravReal5.png', grav)
 
-    pCloud = create_point_cloud(compare4, fx=fkinx, fy=fkiny, cx=ckinx, cy=ckiny, ds=1.0)
-    heightImg = compute_height(pCloud, rowcom, colcom, cam_R_w2c, cam_T_w2c)
-    cv2.imwrite('/home/sthalham/heightReal5.png', heightImg)
+    normImg = get_normal(compare5, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -531,13 +461,18 @@ if __name__ == "__main__":
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
 
+            print('que?')
+            with open(gtfile, 'r') as stream:
+                query = yaml.load(stream)
+                camRot = query['camera_rot']
+
             depth_refine, bboxes, poses, mask_ids = manipulate_depth(gtfile, depfile, partfile)
             depth_refine = np.multiply(depth_refine, 1000.0)  # to millimeters
 
-            #sca = 255.0 / np.amax(depth_refine)
-            #depth_scaled = np.multiply(depth_refine, sca)
-            #depth_int8 = depth_scaled.astype(np.uint8)
-            #cv2.imwrite('/home/sthalham/depth_refine.png', depth_int8)
+            sca = 255.0 / np.amax(depth_refine)
+            depth_scaled = np.multiply(depth_refine, sca)
+            depth_int8 = depth_scaled.astype(np.uint8)
+            cv2.imwrite('/home/sthalham/depth_refine.png', depth_int8)
 
             rows, cols = depth_refine.shape
 
@@ -563,30 +498,23 @@ if __name__ == "__main__":
             focalL = 580        # according to microsoft
             focalLx = 579.68    # blender calculated
             focalLy = 542.31    # blender calculated
+            camRot = np.asarray(camRot).reshape(4, 4)
+            R2w = camRot[0:3, 0:3]
+            T2w = camRot[0:3, 3]
             normImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
                             for_vis=True)
+            encoded = HHA_encoding(depth_refine, normImg, focalLx, focalLy, (kin_res_x * 0.5), (kin_res_y * 0.5), 1.0, R2w, T2w)
+            cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
+            cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
+            cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
+            cv2.imwrite('/home/sthalham/HHA.png', encoded)
+
+
             normImg = np.multiply(normImg, 255.0)
             imgI = normImg.astype(np.uint8)
             cv2.imwrite('/home/sthalham/normarti.png', imgI)
 
-            grav = geoCooFrame(normImg)
-            cv2.imwrite('/home/sthalham/gravArti.png', grav)
-
-            disparity = comp_disp(depth_refine)
-            cv2.imwrite('/home/sthalham/dispArti.png', disparity)
-
             '''
-
-            depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2, 2)
-
-            normImg = get_normal(depth_blur, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
-                                 for_vis=True)
-            normImg = np.multiply(normImg, 255.0)
-            imgI = normImg.astype(np.uint8)
-            #cv2.imwrite('/home/sthalham/normarti.png', imgI)
-
-
-
             
             edge_detection = cv2.ximgproc.createStructuredEdgeDetection(model)
 
