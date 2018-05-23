@@ -256,14 +256,14 @@ for num_set in np.arange(total_set):
                  obj_object.active_material.diffuse_color = rand_color
                  
            if obj.name == 'InvisibleCube':
-               obj_object.rotation_euler.x=radians(random()*90.0) #0~90
+               obj_object.rotation_euler.x=radians(random()*80.0+10.0) #0~90
                obj_object.rotation_euler.y=radians(random()*90.0-45.0) #-45-45
                #obj_object.rotation_euler.y = 0.0
                obj_object.rotation_euler.z=radians(random()*360.0) #0-360
 
         if obj.type == 'CAMERA' and  obj.name=='cam_L':
             obj_object = bpy.data.objects[obj.name]
-            obj_object.location.z = random()*0.2+0.7  #1.0-2.5
+            obj_object.location.z = random()*0.5+0.65  #1.0-2.5
             # point spot to center of plane
             # spot_obj = bpy.data.objects['Spot']
             # spot_obj.rotation_euler[2] = atan(sport_obj.location.x/obj_object.location.z)

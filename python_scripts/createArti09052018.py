@@ -80,7 +80,7 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     depth = np.where(mask, depth, 0.0)
 
     onethird = cv2.resize(depth, None, fx=1/3, fy=1/3, interpolation=cv2.INTER_AREA)
-    onethird = cv2.GaussianBlur(onethird, (5, 5), 0.6, 0.6)
+    onethird = cv2.GaussianBlur(onethird, (7, 7), 0.75, 0.75)
 
     res = (((onethird / 1000) * 1.41421356) ** 2) * 1000
     depth = onethird
@@ -95,8 +95,9 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     std-dev(mm) calib:   x = y = 10, z = 18
     std-dev(mm) uncalib: x = 14, y = 15, z = 18
     '''
-    noise = np.multiply(dNonVar, 0.0025)
-    depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
+    #noise = np.multiply(dNonVar, 0.0025)
+    #depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
+    depthFinal =
 
     # depthFinal = cv2.GaussianBlur(depthFinal, (9, 9), 2.0, 2.0)  # only god knows why
 

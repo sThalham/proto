@@ -11,12 +11,14 @@ import copy
 import transforms3d as tf3d
 import itertools
 import pcl
+import scipy
 from pcl import pcl_visualization
-
 import OpenEXR, Imath
+import segment_normals as seg
 
-#kin_res_x = 640
-#kin_res_y = 480
+
+# kin_res_x = 640
+# kin_res_y = 480
 kin_res_x = 720
 kin_res_y = 540
 fov = 57.8
@@ -24,6 +26,156 @@ focalLx = 579.68  # blender calculated
 focalLy = 542.31  # blender calculated
 
 np.set_printoptions(threshold=np.nan)
+
+
+def encode_area(depth, normals, angle):
+
+    rows, cols, channels = normals.shape
+    areaCol = np.zeros((rows, cols), dtype=np.float32)
+    k = 3  # we fit the plane to the k x k neighborhood of points
+    p_thresh = 0.01  # threshold of eigenvalue for which points are considered locally planar. if eigenvalue>=p_thresh, then points are not planar.
+
+    pcA = create_point_cloud(depth, focalLx, focalLy, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
+
+    label = 0
+    E = seg.UnionFind()  # equivalence class object to use with seq labeling algorithm
+
+    I = seg.Image(pcA, normals)
+
+    # SEQUENTIAL LABELING ALGORITHM
+    print("calling are_coplanar() on every point's kxk neighborhood")
+    for row in range(1, I.rows - 1):
+        for col in range(1, I.cols - 1):
+
+            P = I.get_kxk_neighborhood(row, col, k)  # P is the 3x3 neighborhood centered about (row,col).
+
+            # if (seg.are_locally_coplanar(P, p_thresh) and I.get_point(row, col).coords.any()):  # if all points in P are locally coplanar and middle point isn't zero,
+            if seg.are_locally_coplanar(P, p_thresh):
+
+                I.type[row][col] = 'planar'  # it's locally coplanar with its k-neighborhood, so it's a planar point
+
+                # labels of N, W, and NW points. If these are zero or unlabeled, the value will be -1.
+                p = I.eclass_label[row, col]  # p (should be -1)
+                N = I.eclass_label[row - 1, col] # up
+                W = I.eclass_label[row, col - 1] # left
+                NW = I.eclass_label[row - 1, col - 1]  # top left
+
+                # Sequential labeling algorithm:
+                #   if NW is labeled, set to that one's label
+                #   else if both N and W are labeled, set to N's label and add both N&W to an equivalence class
+                #   else if either N or W is labeled, set to that label
+                #   else make a new label and add to its own new eclass
+
+                if (NW != -1):  # if nw point is labeled, give the middle point the same label
+                    I.eclass_label[row, col] = NW
+                elif ((N != -1) and (W != -1)):  # both are labeled, so set to N label and add both to the same equiv class
+                    I.eclass_label[row, col] = N
+                    E.add(N, W)
+                elif (N != -1):
+                    I.eclass_label[row, col] = N  # if only N or W is labeled, assign it that label
+                elif (W != -1):
+                    I.eclass_label[row, col] = W
+                else:  # none were labeled so make new label for this point and give it a new eclass  (this point is on its own new corner)
+                    label += 1
+                    I.eclass_label[row, col] = label
+                    E.make_new(label)
+            else:  # if they're not coplanar, then middle point doesn't fit a local plane and so make it a nonplanar 'boundary' point
+                I.is_boundary[row, col] = True
+                I.type[row, col] = 'nonplanar'
+
+    # assign a random color to each partition:
+    class_colors = {}
+    for e in E.group.keys():
+        np.random.seed()
+        color = np.array([np.random.randint(0, 255), np.random.randint(0, 255), np.random.randint(0, 255)])
+        class_colors[e] = color  # class_colors is a dictionary that returns a color when passed a partition leader
+
+    # for each point in the image, assign it the color of its partition by getting its leader and passing the leader to class_colors
+    for row in range(0, I.rows):
+        for col in range(0, I.cols):
+            if I.coords[row, col].any() and I.eclass_label[row, col] != -1:  # if it's a planar nonzero, give it a color
+                eclass = E.leader[I.eclass_label[row, col]]
+                I.color[row][col] = class_colors[eclass]
+
+    colored = I.color
+
+    return colored
+
+
+def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
+
+    r, c, p = normals.shape
+    mask = depth < 1000.0
+    normals[:, :, 0] = np.where(mask, normals[:, :, 0], np.NaN)
+    normals[:, :, 1] = np.where(mask, normals[:, :, 1], np.NaN)
+    normals[:, :, 2] = np.where(mask, normals[:, :, 2], np.NaN)
+
+    # calculate disparity
+    depthFloor = 100.0
+    depthCeil = 1000.0
+
+    disparity = np.ones((depth.shape), dtype=np.float32)
+    disparity = np.divide(disparity, depth)
+    disparity = disparity - (1 / depthCeil)
+    denom = (1 / depthFloor) - (1 / depthCeil)
+    disparity = np.divide(disparity, denom)
+    disparity = np.where(np.isinf(disparity), 0.0, disparity)
+    dispSca = disparity - np.nanmin(disparity)
+    maxV = 255.0 / np.nanmax(dispSca)
+    scatemp = np.multiply(dispSca, maxV)
+    disp_final = scatemp.astype(np.uint8)
+    disp_final = np.where(mask, disp_final, 0)
+
+    # compute gravity vector deviation
+    angEst = np.zeros(normals.shape, dtype=np.float32)
+    angEst[:, :, 2] = 1.0
+    angDif = np.zeros(normals.shape, dtype=np.float32)
+    ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0, 5.0, 5.0)
+    for th in ang:
+
+        angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
+        angEstNorm = np.linalg.norm(angEst, axis=2)
+        normalsNorm = np.linalg.norm(normals, axis=2)
+        normalize = np.multiply(normalsNorm, angEstNorm)
+        angDif = np.divide(angtemp, normalize)
+
+        np.where(angDif < 0.0, angDif + 1.0, angDif)
+        angDif = np.arccos(angDif)
+        angDif = np.multiply(angDif, (180/math.pi))
+
+        cond1 = (angDif < th)
+        cond1_ = (angDif > (180.0 - th))
+        cond2 = (angDif > (90.0 - th)) & (angDif < (90.0 + th))
+        cond1 = np.repeat(cond1[:, :, np.newaxis], 3, axis=2)
+        cond1_ = np.repeat(cond1_[:, :, np.newaxis], 3, axis=2)
+        cond2 = np.repeat(cond2[:, :, np.newaxis], 3, axis=2)
+
+        NyPar1 = np.extract(cond1, normals)
+        NyPar2 = np.extract(cond1_, normals)
+        NyPar = np.concatenate((NyPar1, NyPar2))
+        npdim = (NyPar.shape[0] / 3)
+        NyPar = np.reshape(NyPar, (int(npdim), 3))
+        NyOrt = np.extract(cond2, normals)
+        nodim = (NyOrt.shape[0] / 3)
+        NyOrt = np.reshape(NyOrt, (int(nodim), 3))
+
+        cov = (np.transpose(NyOrt)).dot(NyOrt) - (np.transpose(NyPar)).dot(NyPar)
+        u, s, vh = np.linalg.svd(cov)
+        angEst = np.tile(u[:, 2], r * c).reshape((r, c, 3))
+
+    angDifSca = angDif - np.nanmin(angDif)
+    maxV = 255.0 / np.nanmax(angDifSca)
+    scatemp = np.multiply(angDifSca, maxV)
+    gImg = scatemp.astype(np.uint8)
+    gImg[gImg is np.NaN] = 0
+
+    # encode
+    encoded = np.zeros((normals.shape), dtype=np.uint8)
+    encoded[:, :, 0] = disp_final
+    encoded[:, :, 1] = height_final
+    encoded[:, :, 2] = grav_final
+
+    return encoded
 
 
 def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
@@ -91,9 +243,6 @@ def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
     np.where(angDif < 0.0, angDif + 1.0, angDif)
     angDif = np.arccos(angDif)
     angDif = np.multiply(angDif, (180 / math.pi))
-
-    print(np.nanmax(angDif))
-    print(np.nanmin(angDif))
 
     angDif = np.where(mask, angDif, np.NaN)
     angDifSca = angDif - np.nanmin(angDif)
@@ -175,9 +324,13 @@ def comp_disp(depth):
     return disp_final
 
 
-def geoCooFrame(normals):
+def geoCooFrame(normals, depth):
 
     r, c, p = normals.shape
+    mask = depth < 1000.0
+    normals[:, :, 0] = np.where(mask, normals[:, :, 0], np.NaN)
+    normals[:, :, 1] = np.where(mask, normals[:, :, 1], np.NaN)
+    normals[:, :, 2] = np.where(mask, normals[:, :, 2], np.NaN)
 
     angEst = np.zeros(normals.shape, dtype=np.float32)
     angEst[:, :, 2] = 1.0
@@ -219,8 +372,6 @@ def geoCooFrame(normals):
     scatemp = np.multiply(angDifSca, maxV)
     gImg = scatemp.astype(np.uint8)
     gImg[gImg is np.NaN] = 0
-    print(np.nanmax(gImg))
-    print(np.nanmin(gImg))
 
     return gImg
 
@@ -285,17 +436,11 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     depth = np.where(mask, depth, 0.0)
 
     onethird = cv2.resize(depth, None, fx=1/3, fy=1/3, interpolation=cv2.INTER_AREA)
-
-    onethird = cv2.GaussianBlur(onethird, (5, 5), 0.75, 0.75)
-
-
-    # round to depth resolution
-    # should be correct... is applied to depth itself
     res = (((onethird / 1000) * 1.41421356) ** 2) * 1000
     depth = onethird
 
     # discretize to resolution and apply gaussian
-    dNonVar = np.divide(depth, res, out=np.zeros_like(depth), where=res!=0)
+    dNonVar = np.divide(depth, res, out=np.zeros_like(depth), where=res != 0)
     dNonVar = np.round(dNonVar)
     dNonVar = np.multiply(dNonVar, res)
 
@@ -304,8 +449,10 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     std-dev(mm) calib:   x = y = 10, z = 18
     std-dev(mm) uncalib: x = 14, y = 15, z = 18
     '''
-    noise = np.multiply(dNonVar, 0.0025)
+    noise = np.multiply(dNonVar, 0.005)
     depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
+
+    depthFinal = cv2.GaussianBlur(depthFinal, (7, 7), 0.75, 0.75)
 
     # INTER_NEAREST - a nearest-neighbor interpolation
     # INTER_LINEAR - a bilinear interpolation (used by default)
@@ -322,7 +469,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     res_x = depth_refine.shape[1]
 
     # inpainting
-    '''
+
     scaleOri = np.amax(depth_refine)
     inPaiMa = np.where(depth_refine == 0.0, 255, 0)
     inPaiMa = inPaiMa.astype(np.uint8)
@@ -334,7 +481,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     rangeD = np.amax(depNorm)
     depNorm = np.divide(depNorm, rangeD)
     depth_refine = np.multiply(depNorm, scaleOri)
-    '''
+
 
     centerX = cx
     centerY = cy
@@ -353,7 +500,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     v_y = np.zeros((res_y, res_x, 3))
     normals = np.zeros((res_y, res_x, 3))
 
-    dig = np.gradient(depth_refine, 2, edge_order=2)
+    dig = np.gradient(depth_refine, 3, edge_order=2)
     v_y[:, :, 0] = uv_table_sign[:, :, 1] * constant * dig[0]
     v_y[:, :, 1] = depth_refine * constant + (uv_table_sign[:, :, 0] * constant) * dig[0]
     v_y[:, :, 2] = dig[0]
@@ -379,7 +526,7 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
         cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
         cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
 
-    return cross
+    return cross, depth_refine
 
 
 ##########################
@@ -390,6 +537,7 @@ if __name__ == "__main__":
     #root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
     root = '/home/sthalham/data/t-less_mani/proto/renderedScenes17052018/patches'
     model = '/home/sthalham/workspace/python/src/model.yml.gz'
+
 
     compare1 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/19/depth/0412.png', -1)
     compare2 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/09/depth/0117.png', -1)
@@ -411,20 +559,46 @@ if __name__ == "__main__":
     cam_K = np.array([1076.74064739, 0.0, 364.98264967, 0.0, 1075.17825536, 301.59181836, 0.0, 0.0, 1.0])
     ckinx = 364.98264967
     ckiny = 301.59181836
-    normImg = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    encoded = HHA_encoding(compare1, normImg, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0, cam_R_w2c, cam_T_w2c)
-    cv2.imwrite('/home/sthalham/dispReal.png', encoded[:, :, 0])
-    cv2.imwrite('/home/sthalham/heiReal.png', encoded[:, :, 1])
-    cv2.imwrite('/home/sthalham/graReal.png', encoded[:, :, 2])
-    cv2.imwrite('/home/sthalham/HHAReal.png', encoded)
+    normImg1, dptComp1 = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
 
-    normImg = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    grav = geoCooFrame(normImg1, dptComp1)
+    cv2.imwrite('/home/sthalham/visTests/gravReal.png', grav)
 
-    normImg = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    '''
+    encoded1 = HHA_encoding_approx(dptComp1, normImg1, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
+    cv2.imwrite('/home/sthalham/visTests/dispReal1.png', encoded1[:, :, 0])
+    cv2.imwrite('/home/sthalham/visTests/heiReal1.png', encoded1[:, :, 1])
+    cv2.imwrite('/home/sthalham/visTests/graReal1.png', encoded1[:, :, 2])
+    cv2.imwrite('/home/sthalham/visTests/HHAReal1.png', encoded1)
 
-    normImg = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    normImg2, dep2 = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    encoded2 = HHA_encoding_approx(dptComp2, normImg2, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
+    cv2.imwrite('/home/sthalham/visTests/dispReal2.png', encoded2[:, :, 0])
+    cv2.imwrite('/home/sthalham/visTests/heiReal2.png', encoded2[:, :, 1])
+    cv2.imwrite('/home/sthalham/visTests/graReal2.png', encoded2[:, :, 2])
+    cv2.imwrite('/home/sthalham/visTests/HHAReal2.png', encoded2)
 
-    normImg = get_normal(compare5, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    normImg3, dep3 = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    encoded3 = HHA_encoding_approx(dptComp3, normImg3, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
+    cv2.imwrite('/home/sthalham/visTests/dispReal3.png', encoded3[:, :, 0])
+    cv2.imwrite('/home/sthalham/visTests/heiReal3.png', encoded3[:, :, 1])
+    cv2.imwrite('/home/sthalham/visTests/graReal3.png', encoded3[:, :, 2])
+    cv2.imwrite('/home/sthalham/visTests/HHAReal3.png', encoded3)
+
+    normImg4, dep4 = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    encoded4 = HHA_encoding_approx(dptComp4, normImg4, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
+    cv2.imwrite('/home/sthalham/visTests/dispReal4.png', encoded4[:, :, 0])
+    cv2.imwrite('/home/sthalham/visTests/heiReal4.png', encoded4[:, :, 1])
+    cv2.imwrite('/home/sthalham/visTests/graReal4.png', encoded4[:, :, 2])
+    cv2.imwrite('/home/sthalham/visTests/HHAReal4.png', encoded4)
+
+    normImg5, dep5 = get_normal(compare5, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    encoded5 = HHA_encoding_approx(dptComp5, normImg5, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
+    cv2.imwrite('/home/sthalham/visTests/dispReal5.png', encoded5[:, :, 0])
+    cv2.imwrite('/home/sthalham/visTests/heiReal5.png', encoded5[:, :, 1])
+    cv2.imwrite('/home/sthalham/visTests/graReal5.png', encoded5[:, :, 2])
+    cv2.imwrite('/home/sthalham/visTests/HHAReal5.png', encoded5)
+    '''
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -461,7 +635,6 @@ if __name__ == "__main__":
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
 
-            print('que?')
             with open(gtfile, 'r') as stream:
                 query = yaml.load(stream)
                 camRot = query['camera_rot']
@@ -472,7 +645,7 @@ if __name__ == "__main__":
             sca = 255.0 / np.amax(depth_refine)
             depth_scaled = np.multiply(depth_refine, sca)
             depth_int8 = depth_scaled.astype(np.uint8)
-            cv2.imwrite('/home/sthalham/depth_refine.png', depth_int8)
+            cv2.imwrite('/home/sthalham/visTests/depth_refine.png', depth_int8)
 
             rows, cols = depth_refine.shape
 
@@ -480,39 +653,38 @@ if __name__ == "__main__":
             depthcanny = cv2.Canny(depth_int8, 100, 200)
             cv2.imwrite('/home/sthalham/cannydepth.png', depthcanny)
             '''
-            #depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2.5, 2.5)
+            # depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2.5, 2.5)
 
+            # pcA = create_point_cloud(depth_refine, focalLx, focalLy, kin_res_x*0.5, kin_res_y*0.5, 1.0)
+            # cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
+            # visual = pcl.pcl_visualization.CloudViewing()
+            # visual.ShowMonochromeCloud(cloudA)
 
-            #pcA = create_point_cloud(depth_refine, focalLx, focalLy, kin_res_x*0.5, kin_res_y*0.5, 1.0)
-            #cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
-            #visual = pcl.pcl_visualization.CloudViewing()
-            #visual.ShowMonochromeCloud(cloudA)
+            # pcC = create_point_cloud(compare1, fkinx, fkiny, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
+            # cloudC = pcl.PointCloud(np.array(pcC, dtype=np.float32))
+            # visual1 = pcl.pcl_visualization.CloudViewing()
+            # visual1.ShowMonochromeCloud(cloudC)
 
-
-            #pcC = create_point_cloud(compare, fkinx, fkiny, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
-            #cloudC = pcl.PointCloud(np.array(pcC, dtype=np.float32))
-            #visual1 = pcl.pcl_visualization.CloudViewing()
-            #visual1.ShowMonochromeCloud(cloudC)
-
-            
             focalL = 580        # according to microsoft
             focalLx = 579.68    # blender calculated
             focalLy = 542.31    # blender calculated
             camRot = np.asarray(camRot).reshape(4, 4)
             R2w = camRot[0:3, 0:3]
             T2w = camRot[0:3, 3]
-            normImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
+            normImg, depth_inpaint = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
                             for_vis=True)
-            encoded = HHA_encoding(depth_refine, normImg, focalLx, focalLy, (kin_res_x * 0.5), (kin_res_y * 0.5), 1.0, R2w, T2w)
-            cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
-            cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
-            cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
-            cv2.imwrite('/home/sthalham/HHA.png', encoded)
-
-
             normImg = np.multiply(normImg, 255.0)
             imgI = normImg.astype(np.uint8)
-            cv2.imwrite('/home/sthalham/normarti.png', imgI)
+            cv2.imwrite('/home/sthalham/visTests/normarti.png', imgI)
+
+            # encoded = HHA_encoding(depth_refine, normImg, focalLx, focalLy, (kin_res_x * 0.5), (kin_res_y * 0.5), 1.0, R2w, T2w)
+            # cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
+            # cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
+            # cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
+            # cv2.imwrite('/home/sthalham/HHA.png', encoded)
+
+            areaCol = encode_area(depth_inpaint, normImg, 10.0)
+            cv2.imwrite('/home/sthalham/visTests/clusters.png', areaCol)
 
             '''
             
@@ -551,8 +723,7 @@ if __name__ == "__main__":
             
             #cv2.imshow("edgeboxes", im)
             '''
-
-            focalL = 1008.80026817 # blender focal length; just some line to place breakpoint
+    focalL = 1008.80026817 # blender focal length; just some line to place breakpoint
             # similar to t-less' focal length
             # focalL = 580.0  # according to microsoft
             # normImg = get_normal(depth_refine, fx=focalL, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5), for_vis=True)

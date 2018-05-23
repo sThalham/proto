@@ -68,23 +68,15 @@ def boxoverlap(a, b):
 if __name__ == "__main__":
 
     root = '/home/sthalham/data/T-less_Detectron/output/linemodArti18052018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
-    # imgroot = '/home/sthalham/data/t-less_v2/test_kinect/'
-    # annoroot = '/home/sthalham/data/T-less_Detectron/tlessArti30042018/annotations/'
     jsons = root + 'bbox_coco_2014_val_results.json'
-    # pkls = root + 'detection_results.pkl'
+
 
     json_data = open(jsons).read()
     data = json.loads(json_data)
-    # print(len(data))
-
-    # annotations = annoroot + 'instances_val_tless.json'
-    # anno_data = open(annotations).read()
-    # annodata = json.loads(anno_data)
 
     testData = '/home/sthalham/data/LINEMOD/test/'
 
     sub = os.listdir(testData)
-
 
     absObjs = 0
     gtCatLst = [0] * 16
@@ -92,14 +84,18 @@ if __name__ == "__main__":
     falsePosLst = [0] * 16
     falseNegLst = [0] * 16
 
+    allImg = 15 * 1250
+    proImg = 0
+
     for s in sub:
+
+        print(s)
+        if s != "08":
+            continue
+
         rgbPath = testData + s + "/rgb/"
         depPath = testData + s + "/depth/"
         gtPath = testData + s + "/gt.yml"
-        infoPath = testData + s + "/info.yml"
-
-        with open(infoPath, 'r') as stream:
-            opYML = yaml.load(stream)
 
         with open(gtPath, 'r') as streamGT:
             gtYML = yaml.load(streamGT)
@@ -108,7 +104,14 @@ if __name__ == "__main__":
 
         counter = 0
         for ss in subsub:
+
+            proImg = proImg + 1
+            print('Processing image ', proImg, ' / ', allImg)
+
             imgname = ss
+            print(ss)
+            if ss != "0085.png":
+                continue
             rgbImgPath = rgbPath + ss
             depImgPath = depPath + ss
             # print('processing image: ', rgbImgPath)
@@ -136,8 +139,9 @@ if __name__ == "__main__":
             gtBoxes = []
             gtCats = []
             for gt in gtImg:
-                gtBoxes.append(gt['obj_bb'])
-                gtCats.append(gt['obj_id'])
+                if gt['obj_id'] == s:
+                    gtBoxes.append(gt['obj_bb'])
+                    gtCats.append(gt['obj_id'])
             absObjs = absObjs + len(gtCats)  # increment all
 
             detBoxes = []
@@ -145,87 +149,110 @@ if __name__ == "__main__":
             detSco = []
             for det in data:
                 if det['image_id'] == img_id:
-                    detBoxes.append(det['bbox'])
-                    detCats.append(det['category_id'])
-                    detSco.append(det['score'])
+                    if det['category_id'] == s:
+                        detBoxes.append(det['bbox'])
+                        detCats.append(det['category_id'])
+                        detSco.append(det['score'])
 
             if len(detBoxes) < 1:
                 for i in gtCats:
                     gtCatLst[i] = gtCatLst[i] + 1
             else:
-                '''
+                # legitimate cause other objects are present but not annotated
+                detBoxes = [detBoxes[detCats.index(s)]]
+                detSco = [detSco[detCats.index(s)]]
+                detCats = [detCats[detCats.index(s)]]
+
                 boxCleaned = copy.deepcopy(detBoxes)
                 scoCleaned = copy.deepcopy(detSco)
                 catCleaned = copy.deepcopy(detCats)
-                for i, box in enumerate(detBoxes):
-                    for j, box2 in enumerate(detBoxes):
-                        if i == j:
-                            continue
-                        b1 = np.array([box[0], box[1], box[0] + box[2], box[1] + box[3]])
-                        b2 = np.array([box2[0], box2[1], box2[0] + box2[2], box2[1] + box2[3]])
-                        IoU = boxoverlap(b1, b2)
-                        if IoU > 0.5 and detSco[i] > detSco[j]:
-                            boxCleaned[j] = float('nan')
-                            scoCleaned[j] = float('nan')
-                            catCleaned[j] = float('nan')
 
-                detBoxes = [x for x in boxCleaned if str(x) != 'nan']
-                detSco = [x for x in scoCleaned if str(x) != 'nan']
-                detCats = [x for x in catCleaned if str(x) != 'nan']
-                '''
-                boxCleaned = copy.deepcopy(detBoxes)
-                scoCleaned = copy.deepcopy(detSco)
-                catCleaned = copy.deepcopy(detCats)
-                for i, cat in enumerate(detCats):
-                    if cat is not gtCats[0]:
-                        boxCleaned[i] = float('nan')
-                        scoCleaned[i] = float('nan')
-                        catCleaned[i] = float('nan')
+                if len(detBoxes) > 1:
+                    for i, box in enumerate(detBoxes):
+                        for j, box2 in enumerate(detBoxes):
+                            if i == j:
+                                continue
 
-                detBoxes = [x for x in boxCleaned if str(x) != 'nan']
-                detSco = [x for x in scoCleaned if str(x) != 'nan']
-                detCats = [x for x in catCleaned if str(x) != 'nan']
+                            print(box)
+                            print(box2)
+                            b1 = np.array([box[0], box[1], box[0] + box[2], box[1] + box[3]])
+                            b2 = np.array([box2[0], box2[1], box2[0] + box2[2], box2[1] + box2[3]])
+                            IoU = boxoverlap(b1, b2)
+                            if IoU > 0.5 and detSco[i] > detSco[j]:
+                                boxCleaned[j] = float('nan')
+                                scoCleaned[j] = float('nan')
+                                catCleaned[j] = float('nan')
 
-                fp = listDiff(detCats, gtCats)
-                fn = listDiff(gtCats, detCats)
-                tp = listDiff(gtCats, fn)
+                    detBoxes = [x for x in boxCleaned if str(x) != 'nan']
+                    detSco = [x for x in scoCleaned if str(x) != 'nan']
+                    detCats = [x for x in catCleaned if str(x) != 'nan']
 
-                for i in gtCats:
-                    gtCatLst[i] = gtCatLst[i] + 1
-                if tp:
-                    for i in tp:
-                        detCatLst[i] = detCatLst[i] + 1
-                if fp:
-                    for i in fp:
-                        falsePosLst[i] = falsePosLst[i] + 1
-                if fn:
-                    for i in fn:
-                        falseNegLst[i] = falseNegLst[i] + 1
+                falsePos = []
+                truePos = []
+                for i, dC in enumerate(detCats):
+                    for j, gC in enumerate(gtCats):
+                        if dC is gC:
+                            b1 = np.array([detBoxes[i][0], detBoxes[i][1], detBoxes[i][0] + detBoxes[i][2], detBoxes[i][1] + detBoxes[i][3]])
+                            b2 = np.array([gtBoxes[j][0], gtBoxes[j][1], gtBoxes[j][0] + gtBoxes[j][2], gtBoxes[j][1] + gtBoxes[j][3]])
+                            IoU = boxoverlap(b1, b2)
+                            # occurences of 2 or more instances not possible in LINEMOD
+                            if IoU > 0.5:
+                                truePos.append(dC)
+                            else:
+                                falsePos.append(dC)
+                        else:
+                            falsePos.append(dC)
 
-                # VISUALIZATION
+                fp = falsePos
+                tp = truePos
+                fn = listDiff(gtCats, tp)
 
-                '''
+                # indexing with "target category" only possible due to linemod annotation
+                gtCatLst[s] = gtCatLst[s] + len(gtCats)
+                detCatLst[s] = detCatLst[s] + len(tp)
+                falsePosLst[s] = falsePosLst[s] + len(fp)
+                falseNegLst[s] = falseNegLst[s] + len(fn)
+
+                    # VISUALIZATION
                 img = cv2.imread(rgbImgPath, -1)
                 for i, bb in enumerate(detBoxes):
-                    cv2.rectangle(img, (int(bb[0]), int(bb[1])), (int(bb[0]) + int(bb[2]), int(bb[1]) + int(bb[3])), (255, 0, 0),2)
+                    cv2.rectangle(img, (int(bb[0]), int(bb[1])), (int(bb[0]) + int(bb[2]), int(bb[1]) + int(bb[3])),
+                                      (255, 255, 255), 3)
+                    cv2.rectangle(img, (int(bb[0]), int(bb[1])), (int(bb[0]) + int(bb[2]), int(bb[1]) + int(bb[3])),
+                                      (0, 0, 0), 1)
 
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     bottomLeftCornerOfText = (int(bb[0]), int(bb[1]))
                     fontScale = 1
-                    fontColor = (255, 0, 0)
+                    fontColor = (0, 0, 0)
+                    fontthickness = 1
                     lineType = 2
-                    gtText = 'cat: ' + str(detCats[i])
+                    gtText = "drilling machine"
+
+                    fontColor2 = (255, 255, 255)
+                    fontthickness2 = 3
                     cv2.putText(img, gtText,
-                                bottomLeftCornerOfText,
-                                font,
-                                fontScale,
-                                fontColor,
-                                lineType)
+                                    bottomLeftCornerOfText,
+                                    font,
+                                    fontScale,
+                                    fontColor2,
+                                    fontthickness2,
+                                    lineType)
+
+                    cv2.putText(img, gtText,
+                                    bottomLeftCornerOfText,
+                                    font,
+                                    fontScale,
+                                    fontColor,
+                                    fontthickness,
+                                    lineType)
+
+
 
                 cv2.imwrite('/home/sthalham/visTests/detect.jpg', img)
-                '''
 
-                #print('STOP')
+                print('STOP')
+
 
     # Precision = True positive / (True positive + False positive)
     # Recall = True positive / (True positive + False negative)
