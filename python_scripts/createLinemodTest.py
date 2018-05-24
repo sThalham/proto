@@ -170,6 +170,8 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     # cross[depth_refine <= 300] = 0  # 0 and near range cut
     cross[depth_refine > 1500] = 0  # far range cut
     if not for_vis:
+        scaDep = 1.0 / np.nanmax(depth_refine)
+        depth_refine = np.multiply(depth_refine, scaDep)
         cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
         cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
         cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
@@ -293,7 +295,10 @@ if __name__ == "__main__":
             normImg, depth_inpaint = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=True)
 
             #encoded = HHA_encoding(depth_inpaint, normImg, fxkin, fykin, cxkin, cykin, depSca, cam_R, cam_T)
-            imgI = np.multiply(normImg, 255.0)
+            scaNorm = 255.0 / np.nanmax(normImg)
+            normImg = np.multiply(normImg, scaNorm)
+            imgI = normImg.astype(np.uint8)
+
             #cv2.imwrite('/home/sthalham/disparity.png', imgI)
             #cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
             #cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
@@ -345,9 +350,6 @@ if __name__ == "__main__":
                     npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
                     cont = npseg.tolist()
 
-                    cv2.rectangle(imgI, (nx1, ny1), (nx2, ny2), (0, 255, 0), 2)
-                    cv2.imwrite('/home/sthalham/visTests/bb.jpg', imgI)
-
                     annoID = annoID + 1
                     tempVa = {
                         "id": annoID,
@@ -363,8 +365,8 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/linemodTest_HHA/val/' + imgNam
-                #cv2.imwrite(depthName, imgI)
+                depthName = '/home/sthalham/data/T-less_Detectron/linemodTest/val/' + imgNam
+                cv2.imwrite(depthName, imgI)
                 # cv2.imwrite(rgbName, rgbImg)
 
                 #print("storing in test: ", imgNam)
@@ -465,7 +467,7 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         dictVal["categories"].append(tempC)
 
-    valAnno = "/home/sthalham/data/T-less_Detectron/linemodTest_HHA/annotations/instances_val_tless.json"
+    valAnno = "/home/sthalham/data/T-less_Detectron/linemodTest/annotations/instances_val_tless.json"
     #trainAnno = "/home/sthalham/data/T-less_Detectron/linemodTest_HHA/annotations/instances_train_tless.json"
 
     with open(valAnno, 'w') as fpV:

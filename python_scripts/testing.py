@@ -28,12 +28,20 @@ focalLy = 542.31  # blender calculated
 np.set_printoptions(threshold=np.nan)
 
 
-def encode_area(depth, normals, angle):
+def encode_area(depth, normals):
+    # pass depth in mm
 
     rows, cols, channels = normals.shape
-    areaCol = np.zeros((rows, cols), dtype=np.float32)
-    k = 3  # we fit the plane to the k x k neighborhood of points
-    p_thresh = 0.01  # threshold of eigenvalue for which points are considered locally planar. if eigenvalue>=p_thresh, then points are not planar.
+    areaCol = np.zeros((rows, cols), dtype=np.uint8)
+
+    '''
+    for k=3, p~0.02
+    for k=5, p~0.5
+    tless-arti: k=5, p=0.35
+    '''
+    k = 5  # we fit the plane to the k x k neighborhood of points
+    offset = int((k - 1) * 0.5)
+    p_thresh = 0.5
 
     pcA = create_point_cloud(depth, focalLx, focalLy, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
 
@@ -44,36 +52,31 @@ def encode_area(depth, normals, angle):
 
     # SEQUENTIAL LABELING ALGORITHM
     print("calling are_coplanar() on every point's kxk neighborhood")
-    for row in range(1, I.rows - 1):
-        for col in range(1, I.cols - 1):
+    for row in range(offset, I.rows - offset):
+        for col in range(offset, I.cols - offset):
+            if depth[row, col] > 1500.0:
+                I.eclass_label[row, col] = 0
+                E.add(0, 0)
+                continue
 
-            P = I.get_kxk_neighborhood(row, col, k)  # P is the 3x3 neighborhood centered about (row,col).
+            P = I.get_kxk_neighborhood(row, col, k)
 
-            # if (seg.are_locally_coplanar(P, p_thresh) and I.get_point(row, col).coords.any()):  # if all points in P are locally coplanar and middle point isn't zero,
             if seg.are_locally_coplanar(P, p_thresh):
 
-                I.type[row][col] = 'planar'  # it's locally coplanar with its k-neighborhood, so it's a planar point
+                I.type[row, col] = 'planar'  # it's locally coplanar with its k-neighborhood, so it's a planar point
 
-                # labels of N, W, and NW points. If these are zero or unlabeled, the value will be -1.
-                p = I.eclass_label[row, col]  # p (should be -1)
-                N = I.eclass_label[row - 1, col] # up
-                W = I.eclass_label[row, col - 1] # left
-                NW = I.eclass_label[row - 1, col - 1]  # top left
+                N = I.eclass_label[row - 1, col]
+                W = I.eclass_label[row, col - 1]
+                NW = I.eclass_label[row - 1, col - 1]
 
-                # Sequential labeling algorithm:
-                #   if NW is labeled, set to that one's label
-                #   else if both N and W are labeled, set to N's label and add both N&W to an equivalence class
-                #   else if either N or W is labeled, set to that label
-                #   else make a new label and add to its own new eclass
-
-                if (NW != -1):  # if nw point is labeled, give the middle point the same label
+                if NW > 0:  # if nw point is labeled, give the middle point the same label
                     I.eclass_label[row, col] = NW
-                elif ((N != -1) and (W != -1)):  # both are labeled, so set to N label and add both to the same equiv class
+                elif N > 0 and W > 0:  # both are labeled, so set to N label and add both to the same equiv class
                     I.eclass_label[row, col] = N
                     E.add(N, W)
-                elif (N != -1):
+                elif N > 0:
                     I.eclass_label[row, col] = N  # if only N or W is labeled, assign it that label
-                elif (W != -1):
+                elif W > 0:
                     I.eclass_label[row, col] = W
                 else:  # none were labeled so make new label for this point and give it a new eclass  (this point is on its own new corner)
                     label += 1
@@ -83,23 +86,49 @@ def encode_area(depth, normals, angle):
                 I.is_boundary[row, col] = True
                 I.type[row, col] = 'nonplanar'
 
-    # assign a random color to each partition:
-    class_colors = {}
-    for e in E.group.keys():
-        np.random.seed()
-        color = np.array([np.random.randint(0, 255), np.random.randint(0, 255), np.random.randint(0, 255)])
-        class_colors[e] = color  # class_colors is a dictionary that returns a color when passed a partition leader
-
-    # for each point in the image, assign it the color of its partition by getting its leader and passing the leader to class_colors
+    classCounter = []
+    clusterInd = np.zeros((rows, cols), dtype=np.uint32)
     for row in range(0, I.rows):
         for col in range(0, I.cols):
             if I.coords[row, col].any() and I.eclass_label[row, col] != -1:  # if it's a planar nonzero, give it a color
                 eclass = E.leader[I.eclass_label[row, col]]
-                I.color[row][col] = class_colors[eclass]
+                classCounter.append(eclass)
+                clusterInd[row, col] = eclass
 
-    colored = I.color
+    clusters, surf = np.unique(I.eclass_label, return_counts=True)
 
-    return colored
+    flatCounts = surf.flatten()
+    flatCounts.sort()
+
+    areaCol = np.where(clusterInd == -1, 255, areaCol)
+    areaCol = np.where(clusterInd == 0, 0, areaCol)
+    classRem = np.delete(I.eclass_label, np.where(I.eclass_label == 0))
+    classRem = np.delete(classRem, np.where(classRem == 0))
+    #classCounter = filter(lambda a: a == -1, classCounter)
+    #classCounter = filter(lambda a: a == 0, classCounter)
+
+    clusters, surf = np.unique(classRem, return_counts=True)
+    print('clusmax: ', np.amax(clusters))
+    print('clusmin: ', np.amin(clusters))
+    print('surfmax: ', np.amax(surf))
+    print('surfmin: ', np.amin(surf))
+    ref = np.mean(surf)
+    refMax = np.nanmax(surf)
+    # refMax = flatCounts[-2]
+    refRan = refMax - ref
+
+    for i, cl in enumerate(clusters):
+        if cl == 0 or cl == -1:
+            continue
+        mask = np.where(clusterInd == cl, True, False)
+        if surf[i] > ref:
+            val = 127.5 - ((surf[i] - ref) / refRan) * 127.5
+        else:
+            val = 255.0 - ((surf[i] / ref) * 127.5)
+        val = val.astype(dtype=np.uint8)
+        areaCol = np.where(mask, val, areaCol)
+
+    return areaCol
 
 
 def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
@@ -520,8 +549,10 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     cam_angle = np.arccos(cross[:, :, 2])
     #cross[np.abs(cam_angle) > math.radians(75)] = 0  # high normal cut
     #cross[depth_refine <= 100] = 0  # 0 and near range cut
-    cross[depth_refine > 1000] = np.NaN  # far range cut
+    cross[depth_refine > 1500] = np.NaN  # far range cut
     if not for_vis:
+        scaDep = 1.0/np.nanmax(depth_refine)
+        depth_refine = np.multiply(depth_refine, scaDep)
         cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
         cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
         cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
@@ -535,9 +566,8 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
 if __name__ == "__main__":
 
     #root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
-    root = '/home/sthalham/data/t-less_mani/proto/renderedScenes17052018/patches'
+    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD/patches'
     model = '/home/sthalham/workspace/python/src/model.yml.gz'
-
 
     compare1 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/19/depth/0412.png', -1)
     compare2 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/09/depth/0117.png', -1)
@@ -559,12 +589,29 @@ if __name__ == "__main__":
     cam_K = np.array([1076.74064739, 0.0, 364.98264967, 0.0, 1075.17825536, 301.59181836, 0.0, 0.0, 1.0])
     ckinx = 364.98264967
     ckiny = 301.59181836
-    normImg1, dptComp1 = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-
-    grav = geoCooFrame(normImg1, dptComp1)
-    cv2.imwrite('/home/sthalham/visTests/gravReal.png', grav)
 
     '''
+    normImg1, dptComp1 = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    areaCol = encode_area(dptComp1, normImg1)
+    cv2.imwrite('/home/sthalham/visTests/clusteredReal1.png', areaCol)
+
+    normImg2, dptComp2 = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    areaCol = encode_area(dptComp2, normImg2)
+    cv2.imwrite('/home/sthalham/visTests/clusteredReal2.png', areaCol)
+
+    normImg3, dptComp3 = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    areaCol = encode_area(dptComp3, normImg3)
+    cv2.imwrite('/home/sthalham/visTests/clusteredReal3.png', areaCol)
+
+    normImg4, dptComp4 = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    areaCol = encode_area(dptComp4, normImg4)
+    cv2.imwrite('/home/sthalham/visTests/clusteredReal4.png', areaCol)
+
+    normImg5, dptComp5 = get_normal(compare5, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
+    areaCol = encode_area(dptComp5, normImg5)
+    cv2.imwrite('/home/sthalham/visTests/clusteredReal5.png', areaCol)
+
+    
     encoded1 = HHA_encoding_approx(dptComp1, normImg1, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
     cv2.imwrite('/home/sthalham/visTests/dispReal1.png', encoded1[:, :, 0])
     cv2.imwrite('/home/sthalham/visTests/heiReal1.png', encoded1[:, :, 1])
@@ -672,10 +719,13 @@ if __name__ == "__main__":
             R2w = camRot[0:3, 0:3]
             T2w = camRot[0:3, 3]
             normImg, depth_inpaint = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
-                            for_vis=True)
-            normImg = np.multiply(normImg, 255.0)
+                            for_vis=False)
+            sca = 255.0 /np.nanmax(normImg)
+            normImg = np.multiply(normImg, sca)
             imgI = normImg.astype(np.uint8)
             cv2.imwrite('/home/sthalham/visTests/normarti.png', imgI)
+            print(np.nanmax(imgI))
+            print(np.nanmin(imgI))
 
             # encoded = HHA_encoding(depth_refine, normImg, focalLx, focalLy, (kin_res_x * 0.5), (kin_res_y * 0.5), 1.0, R2w, T2w)
             # cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
@@ -683,8 +733,8 @@ if __name__ == "__main__":
             # cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
             # cv2.imwrite('/home/sthalham/HHA.png', encoded)
 
-            areaCol = encode_area(depth_inpaint, normImg, 10.0)
-            cv2.imwrite('/home/sthalham/visTests/clusters.png', areaCol)
+            # areaCol = encode_area(depth_inpaint, normImg)
+            # cv2.imwrite('/home/sthalham/visTests/clusters.png', areaCol)
 
             '''
             
@@ -720,9 +770,10 @@ if __name__ == "__main__":
             edgesrgb = edgesrgb.astype(np.uint8)
             cv2.imwrite("/home/sthalham/strucedgecompare.png", edgesrgb)
 
-            
-            #cv2.imshow("edgeboxes", im)
             '''
+            print('stop')
+
+
     focalL = 1008.80026817 # blender focal length; just some line to place breakpoint
             # similar to t-less' focal length
             # focalL = 580.0  # according to microsoft

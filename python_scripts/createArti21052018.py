@@ -174,6 +174,8 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     # cross[depth_refine <= 300] = 0  # 0 and near range cut
     cross[depth_refine > 1500] = 0  # far range cut
     if not for_vis:
+        scaDep = 1.0 / np.nanmax(depth_refine)
+        depth_refine = np.multiply(depth_refine, scaDep)
         cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
         cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
         cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
@@ -186,7 +188,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 ##########################
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
+    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD/patches'  # path to train samples
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -209,7 +211,7 @@ if __name__ == "__main__":
 
     annoID = 0
     gloCo = 0
-    all = 2430
+    all = 8574
     times = []
 
     depPath = root + "/depth/"
@@ -239,7 +241,8 @@ if __name__ == "__main__":
             focalL = 580.0  # according to microsoft
             normImg, dptImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5), for_vis=True)
 
-            normImg = np.multiply(normImg, 255.0)
+            scaNorm = 255.0 / np.nanmax(normImg)
+            normImg = np.multiply(normImg, scaNorm)
             imgI = normImg.astype(np.uint8)
 
                 #drawN = [1, 1, 1, 1, 2]
@@ -251,7 +254,7 @@ if __name__ == "__main__":
                 # print("storage choice: ", rnd)
             if rnd == 1:
 
-                imgPath = '/home/sthalham/data/T-less_Detectron/tlessArti21052018/train/' + newredname + '.jpg'
+                imgPath = '/home/sthalham/data/T-less_Detectron/linemodTrain/train/' + newredname + '.jpg'
                 imgID = int(newredname)
                 imgName = newredname + '.jpg'
 
@@ -326,7 +329,7 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         #dictVal["categories"].append(tempC)
 
-    traAnno = "/home/sthalham/data/T-less_Detectron/tlessArti21052018/annotations/instances_train_tless.json"
+    traAnno = "/home/sthalham/data/T-less_Detectron/linemodTrain/annotations/instances_train_tless.json"
     #valAnno = "/home/sthalham/data/T-less_Detectron/tlessArti24042018_split/annotations/instances_val_tless.json"
 
     with open(traAnno, 'w') as fpT:
