@@ -15,6 +15,7 @@ import scipy
 from pcl import pcl_visualization
 import OpenEXR, Imath
 import segment_normals as seg
+import time
 
 
 # kin_res_x = 640
@@ -24,6 +25,7 @@ kin_res_y = 540
 fov = 57.8
 focalLx = 579.68  # blender calculated
 focalLy = 542.31  # blender calculated
+depthCut = 1500.0
 
 np.set_printoptions(threshold=np.nan)
 
@@ -41,7 +43,7 @@ def encode_area(depth, normals):
     '''
     k = 5  # we fit the plane to the k x k neighborhood of points
     offset = int((k - 1) * 0.5)
-    p_thresh = 0.5
+    p_thresh = 0.35
 
     pcA = create_point_cloud(depth, focalLx, focalLy, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
 
@@ -54,9 +56,7 @@ def encode_area(depth, normals):
     print("calling are_coplanar() on every point's kxk neighborhood")
     for row in range(offset, I.rows - offset):
         for col in range(offset, I.cols - offset):
-            if depth[row, col] > 1500.0:
-                I.eclass_label[row, col] = 0
-                E.add(0, 0)
+            if depth[row, col] > depthCut:
                 continue
 
             P = I.get_kxk_neighborhood(row, col, k)
@@ -69,25 +69,30 @@ def encode_area(depth, normals):
                 W = I.eclass_label[row, col - 1]
                 NW = I.eclass_label[row - 1, col - 1]
 
-                if NW > 0:  # if nw point is labeled, give the middle point the same label
+                if NW != -1:
                     I.eclass_label[row, col] = NW
-                elif N > 0 and W > 0:  # both are labeled, so set to N label and add both to the same equiv class
+                elif N != -1 and W != -1:
                     I.eclass_label[row, col] = N
                     E.add(N, W)
-                elif N > 0:
-                    I.eclass_label[row, col] = N  # if only N or W is labeled, assign it that label
-                elif W > 0:
+
+                elif N != -1:
+                    I.eclass_label[row, col] = N
+
+                elif W != -1:
                     I.eclass_label[row, col] = W
-                else:  # none were labeled so make new label for this point and give it a new eclass  (this point is on its own new corner)
+                else:
                     label += 1
                     I.eclass_label[row, col] = label
                     E.make_new(label)
-            else:  # if they're not coplanar, then middle point doesn't fit a local plane and so make it a nonplanar 'boundary' point
+            else:
                 I.is_boundary[row, col] = True
                 I.type[row, col] = 'nonplanar'
 
+            # if row % 40 is 0:
+            #     print("we're on point (row=", row, ",col=", col, ")")
+
     classCounter = []
-    clusterInd = np.zeros((rows, cols), dtype=np.uint32)
+    clusterInd = np.ones((rows, cols), dtype=np.uint32) * -1
     for row in range(0, I.rows):
         for col in range(0, I.cols):
             if I.coords[row, col].any() and I.eclass_label[row, col] != -1:  # if it's a planar nonzero, give it a color
@@ -95,38 +100,35 @@ def encode_area(depth, normals):
                 classCounter.append(eclass)
                 clusterInd[row, col] = eclass
 
-    clusters, surf = np.unique(I.eclass_label, return_counts=True)
+    test = np.where(clusterInd == -1, 255, 0)
+    cv2.imwrite('/home/sthalham/visTests/test.jpg', test)
+
+    clusters, surf = np.unique(clusterInd, return_counts=True)
 
     flatCounts = surf.flatten()
     flatCounts.sort()
 
-    areaCol = np.where(clusterInd == -1, 255, areaCol)
-    areaCol = np.where(clusterInd == 0, 0, areaCol)
-    classRem = np.delete(I.eclass_label, np.where(I.eclass_label == 0))
-    classRem = np.delete(classRem, np.where(classRem == 0))
-    #classCounter = filter(lambda a: a == -1, classCounter)
-    #classCounter = filter(lambda a: a == 0, classCounter)
-
-    clusters, surf = np.unique(classRem, return_counts=True)
-    print('clusmax: ', np.amax(clusters))
-    print('clusmin: ', np.amin(clusters))
-    print('surfmax: ', np.amax(surf))
-    print('surfmin: ', np.amin(surf))
-    ref = np.mean(surf)
-    refMax = np.nanmax(surf)
-    # refMax = flatCounts[-2]
-    refRan = refMax - ref
+    # ref = np.mean(surf)
+    # refMax = np.nanmax(surf)
+    # refMax = flatCounts[-3]
+    # refRan = refMax - ref
+    ref = 2500
 
     for i, cl in enumerate(clusters):
-        if cl == 0 or cl == -1:
+
+        if cl == -1:
+            mask = np.where(clusterInd == cl, True, False)
+            val = int(255)
+            areaCol = np.where(mask, val, areaCol)
+        elif surf[i] > ref:
             continue
-        mask = np.where(clusterInd == cl, True, False)
-        if surf[i] > ref:
-            val = 127.5 - ((surf[i] - ref) / refRan) * 127.5
         else:
-            val = 255.0 - ((surf[i] / ref) * 127.5)
-        val = val.astype(dtype=np.uint8)
-        areaCol = np.where(mask, val, areaCol)
+            mask = np.where(clusterInd == cl, True, False)
+            val = 255 - ((surf[i] / ref) * 255.0)
+            val = val.astype(dtype=np.uint8)
+            areaCol = np.where(mask, val, areaCol)
+
+    areaCol = np.where(depth > depthCut, 0, areaCol)
 
     return areaCol
 
@@ -552,10 +554,10 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
     cross[depth_refine > 1500] = np.NaN  # far range cut
     if not for_vis:
         scaDep = 1.0/np.nanmax(depth_refine)
-        depth_refine = np.multiply(depth_refine, scaDep)
-        cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_refine - 0.5))  # nearer has higher intensity
-        cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_refine - 0.5))
-        cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_refine - 0.5))
+        depth_norm = np.multiply(depth_refine, scaDep)
+        cross[:, :, 0] = cross[:, :, 0] * (1 - (depth_norm - 0.5))  # nearer has higher intensity
+        cross[:, :, 1] = cross[:, :, 1] * (1 - (depth_norm - 0.5))
+        cross[:, :, 2] = cross[:, :, 2] * (1 - (depth_norm - 0.5))
 
     return cross, depth_refine
 
@@ -718,8 +720,12 @@ if __name__ == "__main__":
             camRot = np.asarray(camRot).reshape(4, 4)
             R2w = camRot[0:3, 0:3]
             T2w = camRot[0:3, 3]
+
+            start_time = time.time()
             normImg, depth_inpaint = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
                             for_vis=False)
+            elapsed_time = time.time() - start_time
+            print('normal calculation time: ', elapsed_time)
             sca = 255.0 /np.nanmax(normImg)
             normImg = np.multiply(normImg, sca)
             imgI = normImg.astype(np.uint8)
@@ -733,9 +739,13 @@ if __name__ == "__main__":
             # cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
             # cv2.imwrite('/home/sthalham/HHA.png', encoded)
 
-            # areaCol = encode_area(depth_inpaint, normImg)
-            # cv2.imwrite('/home/sthalham/visTests/clusters.png', areaCol)
+            start_time = time.time()
+            areaCol = encode_area(depth_inpaint, normImg)
+            elapsed_time = time.time() - start_time
+            print('encode area calculation time: ', elapsed_time)
+            cv2.imwrite('/home/sthalham/visTests/clusters.png', areaCol)
 
+            print('testitest')
             '''
             
             edge_detection = cv2.ximgproc.createStructuredEdgeDetection(model)
