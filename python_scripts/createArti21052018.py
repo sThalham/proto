@@ -317,7 +317,7 @@ if __name__ == "__main__":
             if gloCo % 100 == 0:
                 print('eta: ', eta, ' min')
 
-    catsInt = range(1, 31)
+    catsInt = range(1, 16)
 
     for s in catsInt:
         objName = str(s)

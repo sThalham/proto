@@ -236,7 +236,7 @@ if __name__ == "__main__":
     annoID = 0
 
     gloCo = 0
-    allCo = 504 * 20
+    allCo = 1250 * 15
     times = []
 
     for s in sub:
@@ -294,15 +294,15 @@ if __name__ == "__main__":
 
             normImg, depth_inpaint = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=True)
 
-            #encoded = HHA_encoding(depth_inpaint, normImg, fxkin, fykin, cxkin, cykin, depSca, cam_R, cam_T)
+            encoded = HHA_encoding(depth_inpaint, normImg, fxkin, fykin, cxkin, cykin, depSca, cam_R, cam_T)
             scaNorm = 255.0 / np.nanmax(normImg)
             normImg = np.multiply(normImg, scaNorm)
             imgI = normImg.astype(np.uint8)
 
-            #cv2.imwrite('/home/sthalham/disparity.png', imgI)
-            #cv2.imwrite('/home/sthalham/height.png', encoded[:, :, 1])
-            #cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
-            #cv2.imwrite('/home/sthalham/HHA.png', encoded)
+            cv2.imwrite('/home/sthalham/visTests/disparity.png', imgI)
+            cv2.imwrite('/home/sthalham/visTests/height.png', encoded[:, :, 1])
+            cv2.imwrite('/home/sthalham/visTests/gravity.png', encoded[:, :, 2])
+            cv2.imwrite('/home/sthalham/visTests/HHA.png', encoded)
 
             # create image number and name
             template = '00000'
@@ -325,9 +325,9 @@ if __name__ == "__main__":
             # print(gtYML[int(ss)])
             gtImg = gtYML[int(ss)]
 
-            drawN = [1, 1, 1, 1, 2]
-            freq = np.bincount(drawN)
-            rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
+            #drawN = [1, 1, 1, 1, 2]
+            #freq = np.bincount(drawN)
+            # rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
 
             # change drawN if you want a data split
             # print("storage choice: ", rnd)
@@ -365,9 +365,9 @@ if __name__ == "__main__":
                 # cnt = cnt.ravel()
                 # cont = cnt.tolist()
 
-                depthName = '/home/sthalham/data/T-less_Detectron/linemodTest/val/' + imgNam
+                depthName = '/home/sthalham/data/T-less_Detectron/linemodTestHHA/val/' + imgNam
                 cv2.imwrite(depthName, imgI)
-                # cv2.imwrite(rgbName, rgbImg)
+
 
                 #print("storing in test: ", imgNam)
 
@@ -455,7 +455,7 @@ if __name__ == "__main__":
             if gloCo % 100 == 0:
                 print('eta: ', eta, ' min')
 
-    catsInt = range(1, 31)
+    catsInt = range(1, 16)
 
     for s in catsInt:
         objName = str(s)
@@ -467,7 +467,7 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         dictVal["categories"].append(tempC)
 
-    valAnno = "/home/sthalham/data/T-less_Detectron/linemodTest/annotations/instances_val_tless.json"
+    valAnno = "/home/sthalham/data/T-less_Detectron/linemodTestHHA/annotations/instances_val_tless.json"
     #trainAnno = "/home/sthalham/data/T-less_Detectron/linemodTest_HHA/annotations/instances_train_tless.json"
 
     with open(valAnno, 'w') as fpV:

@@ -67,7 +67,7 @@ def boxoverlap(a, b):
 
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/T-less_Detectron/output/linemodArti18052018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
+    root = '/home/sthalham/data/T-less_Detectron/output/linemodArti24052018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
     jsons = root + 'bbox_coco_2014_val_results.json'
 
 
@@ -84,14 +84,10 @@ if __name__ == "__main__":
     falsePosLst = [0] * 16
     falseNegLst = [0] * 16
 
-    allImg = 15 * 1250
+    allImg = 18273
     proImg = 0
 
     for s in sub:
-
-        print(s)
-        if s != "08":
-            continue
 
         rgbPath = testData + s + "/rgb/"
         depPath = testData + s + "/depth/"
@@ -109,9 +105,7 @@ if __name__ == "__main__":
             print('Processing image ', proImg, ' / ', allImg)
 
             imgname = ss
-            print(ss)
-            if ss != "0085.png":
-                continue
+
             rgbImgPath = rgbPath + ss
             depImgPath = depPath + ss
             # print('processing image: ', rgbImgPath)

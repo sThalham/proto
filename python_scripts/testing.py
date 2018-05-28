@@ -18,10 +18,10 @@ import segment_normals as seg
 import time
 
 
-# kin_res_x = 640
-# kin_res_y = 480
-kin_res_x = 720
-kin_res_y = 540
+kin_res_x = 640
+kin_res_y = 480
+# kin_res_x = 720
+# kin_res_y = 540
 fov = 57.8
 focalLx = 579.68  # blender calculated
 focalLy = 542.31  # blender calculated
@@ -30,10 +30,10 @@ depthCut = 1500.0
 np.set_printoptions(threshold=np.nan)
 
 
-def encode_area(depth, normals):
+def encode_area(depth, k=5, p_thresh=0.35, area_ref=5000):
     # pass depth in mm
 
-    rows, cols, channels = normals.shape
+    rows, cols = depth.shape
     areaCol = np.zeros((rows, cols), dtype=np.uint8)
 
     '''
@@ -41,16 +41,14 @@ def encode_area(depth, normals):
     for k=5, p~0.5
     tless-arti: k=5, p=0.35
     '''
-    k = 5  # we fit the plane to the k x k neighborhood of points
     offset = int((k - 1) * 0.5)
-    p_thresh = 0.35
 
     pcA = create_point_cloud(depth, focalLx, focalLy, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
 
     label = 0
     E = seg.UnionFind()  # equivalence class object to use with seq labeling algorithm
 
-    I = seg.Image(pcA, normals)
+    I = seg.Image(pcA, kin_res_x, kin_res_y)
 
     # SEQUENTIAL LABELING ALGORITHM
     print("calling are_coplanar() on every point's kxk neighborhood")
@@ -100,19 +98,10 @@ def encode_area(depth, normals):
                 classCounter.append(eclass)
                 clusterInd[row, col] = eclass
 
-    test = np.where(clusterInd == -1, 255, 0)
-    cv2.imwrite('/home/sthalham/visTests/test.jpg', test)
-
     clusters, surf = np.unique(clusterInd, return_counts=True)
 
     flatCounts = surf.flatten()
     flatCounts.sort()
-
-    # ref = np.mean(surf)
-    # refMax = np.nanmax(surf)
-    # refMax = flatCounts[-3]
-    # refRan = refMax - ref
-    ref = 2500
 
     for i, cl in enumerate(clusters):
 
@@ -120,11 +109,11 @@ def encode_area(depth, normals):
             mask = np.where(clusterInd == cl, True, False)
             val = int(255)
             areaCol = np.where(mask, val, areaCol)
-        elif surf[i] > ref:
+        elif surf[i] > area_ref:
             continue
         else:
             mask = np.where(clusterInd == cl, True, False)
-            val = 255 - ((surf[i] / ref) * 255.0)
+            val = 255 - ((surf[i] / area_ref) * 255.0)
             val = val.astype(dtype=np.uint8)
             areaCol = np.where(mask, val, areaCol)
 
@@ -136,14 +125,14 @@ def encode_area(depth, normals):
 def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
 
     r, c, p = normals.shape
-    mask = depth < 1000.0
+    mask = depth < depthCut
     normals[:, :, 0] = np.where(mask, normals[:, :, 0], np.NaN)
     normals[:, :, 1] = np.where(mask, normals[:, :, 1], np.NaN)
     normals[:, :, 2] = np.where(mask, normals[:, :, 2], np.NaN)
 
     # calculate disparity
     depthFloor = 100.0
-    depthCeil = 1000.0
+    depthCeil = depthCut
 
     disparity = np.ones((depth.shape), dtype=np.float32)
     disparity = np.divide(disparity, depth)
@@ -160,10 +149,8 @@ def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
     # compute gravity vector deviation
     angEst = np.zeros(normals.shape, dtype=np.float32)
     angEst[:, :, 2] = 1.0
-    angDif = np.zeros(normals.shape, dtype=np.float32)
     ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0, 5.0, 5.0)
     for th in ang:
-
         angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
         angEstNorm = np.linalg.norm(angEst, axis=2)
         normalsNorm = np.linalg.norm(normals, axis=2)
@@ -172,7 +159,7 @@ def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
 
         np.where(angDif < 0.0, angDif + 1.0, angDif)
         angDif = np.arccos(angDif)
-        angDif = np.multiply(angDif, (180/math.pi))
+        angDif = np.multiply(angDif, (180 / math.pi))
 
         cond1 = (angDif < th)
         cond1_ = (angDif > (180.0 - th))
@@ -212,11 +199,11 @@ def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
 def HHA_encoding(depth, normals, fx, fy, cx, cy, ds, R_w2c, T_w2c):
 
     rows, cols, channels = normals.shape
-    mask = depth < 1000.0
+    mask = depth < depthCut
 
     # calculate disparity
     depthFloor = 100.0
-    depthCeil = 1000.0
+    depthCeil = depthCut
 
     disparity = np.ones((depth.shape), dtype=np.float32)
     disparity = np.divide(disparity, depth)
@@ -358,14 +345,14 @@ def comp_disp(depth):
 def geoCooFrame(normals, depth):
 
     r, c, p = normals.shape
-    mask = depth < 1000.0
+    mask = depth < depthCut
     normals[:, :, 0] = np.where(mask, normals[:, :, 0], np.NaN)
     normals[:, :, 1] = np.where(mask, normals[:, :, 1], np.NaN)
     normals[:, :, 2] = np.where(mask, normals[:, :, 2], np.NaN)
 
     angEst = np.zeros(normals.shape, dtype=np.float32)
     angEst[:, :, 2] = 1.0
-    ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0, 5.0, 5.0)
+    ang = (65.0, 65.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0, 5.0, 5.0)
     for th in ang:
 
         angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
@@ -571,49 +558,65 @@ if __name__ == "__main__":
     root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD/patches'
     model = '/home/sthalham/workspace/python/src/model.yml.gz'
 
-    compare1 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/19/depth/0412.png', -1)
-    compare2 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/09/depth/0117.png', -1)
-    compare3 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/13/depth/0079.png', -1)
-    compare4 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/04/depth/0291.png', -1)
-    compare5 = cv2.imread('/home/sthalham/data/t-less_v2/test_kinect/16/depth/0205.png', -1)
+    compare1 = cv2.imread('/home/sthalham/data/LINEMOD/test/02/depth/0731.png', -1)
+    compare2 = cv2.imread('/home/sthalham/data/LINEMOD/test/04/depth/0662.png', -1)
+    compare3 = cv2.imread('/home/sthalham/data/LINEMOD/test/06/depth/0909.png', -1)
+    compare4 = cv2.imread('/home/sthalham/data/LINEMOD/test/09/depth/0404.png', -1)
+    compare5 = cv2.imread('/home/sthalham/data/LINEMOD/test/14/depth/0403.png', -1)
 
     rowcom, colcom = compare1.shape
-    compare1 = np.multiply(compare1, 0.1)
-    compare2 = np.multiply(compare2, 0.1)
-    compare3 = np.multiply(compare3, 0.1)
-    compare4 = np.multiply(compare4, 0.1)
-    compare5 = np.multiply(compare5, 0.1)
+    # compare1 = np.multiply(compare1, 0.1)
+    # compare2 = np.multiply(compare2, 0.1)
+    # compare3 = np.multiply(compare3, 0.1)
+    # compare4 = np.multiply(compare4, 0.1)
+    # compare5 = np.multiply(compare5, 0.1)
 
-    fkinx = 1076.74
-    fkiny = 1075.18
+    # t-less
+    # fkinx = 1076.74
+    # fkiny = 1075.18
     cam_R_w2c = np.array([[-0.990781, 0.135477, -0.00023996],[0.0560823, 0.408533, -0.911019], [-0.123324, -0.902633, -0.412365]])
     cam_T_w2c = np.array([-3.62461, -0.291907, 788.726])
     cam_K = np.array([1076.74064739, 0.0, 364.98264967, 0.0, 1075.17825536, 301.59181836, 0.0, 0.0, 1.0])
-    ckinx = 364.98264967
-    ckiny = 301.59181836
+    # ckinx = 364.98264967
+    # ckiny = 301.59181836
 
-    '''
+    # linemod
+    fkinx = 572.4114
+    fkiny = 573.57043
+    ckinx = 325.2611
+    ckiny = 242.04899
+
     normImg1, dptComp1 = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    areaCol = encode_area(dptComp1, normImg1)
+    areaCol = encode_area(dptComp1)
     cv2.imwrite('/home/sthalham/visTests/clusteredReal1.png', areaCol)
+    gravImg = geoCooFrame(normImg1, dptComp1)
+    cv2.imwrite('/home/sthalham/visTests/gravImg1.png', gravImg)
 
     normImg2, dptComp2 = get_normal(compare2, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    areaCol = encode_area(dptComp2, normImg2)
+    areaCol = encode_area(dptComp2)
     cv2.imwrite('/home/sthalham/visTests/clusteredReal2.png', areaCol)
+    gravImg = geoCooFrame(normImg2, dptComp2)
+    cv2.imwrite('/home/sthalham/visTests/gravImg2.png', gravImg)
 
     normImg3, dptComp3 = get_normal(compare3, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    areaCol = encode_area(dptComp3, normImg3)
+    areaCol = encode_area(dptComp3)
     cv2.imwrite('/home/sthalham/visTests/clusteredReal3.png', areaCol)
+    gravImg = geoCooFrame(normImg3, dptComp3)
+    cv2.imwrite('/home/sthalham/visTests/gravImg3.png', gravImg)
 
     normImg4, dptComp4 = get_normal(compare4, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    areaCol = encode_area(dptComp4, normImg4)
+    areaCol = encode_area(dptComp4)
     cv2.imwrite('/home/sthalham/visTests/clusteredReal4.png', areaCol)
+    gravImg = geoCooFrame(normImg4, dptComp4)
+    cv2.imwrite('/home/sthalham/visTests/gravImg4.png', gravImg)
 
     normImg5, dptComp5 = get_normal(compare5, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
-    areaCol = encode_area(dptComp5, normImg5)
+    areaCol = encode_area(dptComp5)
     cv2.imwrite('/home/sthalham/visTests/clusteredReal5.png', areaCol)
+    gravImg = geoCooFrame(normImg5, dptComp5)
+    cv2.imwrite('/home/sthalham/visTests/gravImg5.png', gravImg)
 
-    
+    '''
     encoded1 = HHA_encoding_approx(dptComp1, normImg1, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
     cv2.imwrite('/home/sthalham/visTests/dispReal1.png', encoded1[:, :, 0])
     cv2.imwrite('/home/sthalham/visTests/heiReal1.png', encoded1[:, :, 1])
@@ -740,10 +743,12 @@ if __name__ == "__main__":
             # cv2.imwrite('/home/sthalham/HHA.png', encoded)
 
             start_time = time.time()
-            areaCol = encode_area(depth_inpaint, normImg)
+            areaCol = encode_area(depth_inpaint)
             elapsed_time = time.time() - start_time
             print('encode area calculation time: ', elapsed_time)
             cv2.imwrite('/home/sthalham/visTests/clusters.png', areaCol)
+            gravImg = geoCooFrame(normImg1, dptComp1)
+            cv2.imwrite('/home/sthalham/visTests/gravArti.png', gravImg)
 
             print('testitest')
             '''

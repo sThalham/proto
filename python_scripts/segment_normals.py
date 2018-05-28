@@ -7,14 +7,13 @@ from numpy.linalg import *
 
 class Image:
     
-    def __init__(self, pc, normals):
+    def __init__(self, pc, aCols, aRows):
         
-        self.rows = rows = int(normals.shape[0])
-        self.cols = cols = int(normals.shape[1])
+        self.rows = rows = int(aRows)
+        self.cols = cols = int(aCols)
         self.image = []
 
-        self.normals = normals
-        self.color = ones(normals.shape, dtype=uint8) * -1
+        self.color = ones((rows, cols, 3), dtype=uint8) * -1
         self.coords = reshape(pc, (rows, cols, 3))
 
         self.eclass_label = ones((rows, cols), dtype=uint8) * -1
@@ -50,8 +49,8 @@ class UnionFind:
         leadera = self.leader.get(a)
         leaderb = self.leader.get(b)
         
-        if leadera is not None:
-            if leaderb is not None:
+        if leadera != -1:
+            if leaderb != -1:
                 if leadera == leaderb: return       #these aren't distinct groups, quit
                 groupa = self.group[leadera]        
                 groupb = self.group[leaderb]
@@ -66,7 +65,7 @@ class UnionFind:
                 self.group[leadera].add(b)
                 self.leader[b] = leadera
         else:
-            if leaderb is not None:
+            if leaderb != -1:
                 #if a's group is empty but b's group isn't, stick a into b's group
                 self.group[leaderb].add(a)
                 self.leader[a] = leaderb
