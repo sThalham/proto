@@ -62,9 +62,9 @@ main (int argc, char** argv)
   pcl::console::TicToc tt;
 
   // Load the input point cloud
-  std::cerr << "Loading...\n", tt.tic ();
+  //std::cerr << "Loading...\n", tt.tic ();
   pcl::io::loadPCDFile (argv[1], *cloud_in);
-  std::cerr << ">> Done: " << tt.toc () << " ms, " << cloud_in->points.size () << " points\n";
+  //std::cerr << ">> Done: " << tt.toc () << " ms, " << cloud_in->points.size () << " points\n";
 
   // Downsample the cloud using a Voxel Grid class
   //std::cerr << "Downsampling...\n", tt.tic ();
@@ -76,7 +76,7 @@ main (int argc, char** argv)
   //std::cerr << ">> Done: " << tt.toc () << " ms, " << cloud_out->points.size () << " points\n";
 
   // Set up a Normal Estimation class and merge data in cloud_with_normals
-  std::cerr << "Computing normals...\n", tt.tic ();
+  //std::cerr << "Computing normals...\n", tt.tic ();
   pcl::copyPointCloud (*cloud_in, *cloud_with_normals);
   pcl::NormalEstimationOMP<PointTypeIO, PointTypeFull> ne;
   ne.setInputCloud (cloud_in);
@@ -92,10 +92,10 @@ main (int argc, char** argv)
   //ne.setInputCloud(cloud_in);
   //ne.compute(*cloud_with_normals);
 
-  std::cerr << ">> Done: " << tt.toc () << " ms\n";
+  //std::cerr << ">> Done: " << tt.toc () << " ms\n";
 
   // Set up a Conditional Euclidean Clustering class
-  std::cerr << "Segmenting to clusters...\n", tt.tic ();
+  //std::cerr << "Segmenting to clusters...\n", tt.tic ();
   pcl::ConditionalEuclideanClustering<PointTypeFull> cec (true);
   cec.setInputCloud (cloud_with_normals);
   cec.setConditionFunction (&customRegionGrowing);
@@ -106,7 +106,7 @@ main (int argc, char** argv)
   cec.setMaxClusterSize(cloud_with_normals->points.size());
   cec.segment (*clusters);
   cec.getRemovedClusters (small_clusters, large_clusters);
-  std::cerr << ">> Done: " << tt.toc () << " ms\n";
+  //std::cerr << ">> Done: " << tt.toc () << " ms\n";
 
   // Using the intensity channel for lazy visualization of the output
   double intenSmall = 127.0;
@@ -119,7 +119,7 @@ main (int argc, char** argv)
     for (int j = 0; j < (*large_clusters)[i].indices.size (); ++j)
       cloud_in->points[(*large_clusters)[i].indices[j]].intensity = intenBig;
       intenBig += 1.0;
-  std::cerr << "clusters: " << clusters->size() << std::endl;
+  //std::cerr << "clusters: " << clusters->size() << std::endl;
   for (int i = 0; i < clusters->size (); ++i)
   {
     int label = rand ();
@@ -138,9 +138,9 @@ main (int argc, char** argv)
   //fbFilter.applyFilter(cloud_upscaled)
 
   // Save the output point cloud
-  std::cerr << "Saving...\n", tt.tic ();
+  //std::cerr << "Saving...\n", tt.tic ();
   pcl::io::savePCDFile (argv[2], *cloud_in);
-  std::cerr << ">> Done: " << tt.toc () << " ms\n";
+  //std::cerr << ">> Done: " << tt.toc () << " ms\n";
 
   return (0);
 }
