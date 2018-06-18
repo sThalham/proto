@@ -112,7 +112,7 @@ def getVisibleBoundingBox(objectPassIndex):
 
 base_dir = "/home/sthalham/data/LINEMOD/models_stl"
 back_dir = "/home/sthalham/data/CAD_stl/rnd"
-total_set = 1000 #10000 set of scenes, each set has identical objects with varied poses to anchor pose (+-15)
+total_set = 500 #10000 set of scenes, each set has identical objects with varied poses to anchor pose (+-15)
 pair_set = 1 #number of pair scene for each set, 10
 sample_dir = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD31052018' #directory for temporary files (cam_L, cam_R, masks..~)
 target_dir = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD31052018/patches'
@@ -150,7 +150,8 @@ for root, dirs, files in os.walk(base_dir):
              model_solo.append(file)
              #print(len(model_file),temp_fn)
 
-# FOR BACKGROUND OBJECTS          
+# FOR BACKGROUND OBJECTS 
+'''         
 back_file=[]
 back_solo=[]
 for rootb, dirsb, filesb in os.walk(back_dir):
@@ -160,6 +161,7 @@ for rootb, dirsb, filesb in os.walk(back_dir):
              back_file.append(temp_fn)
              back_solo.append(file)
              #print(len(model_file),temp_fn)
+'''
 # FOR BACKGROUND OBJECTS  
 
 for num_set in np.arange(total_set):
@@ -198,6 +200,7 @@ for num_set in np.arange(total_set):
     mat = obj_object.active_material
 
     # FOR BACKGROUND OBJECTS
+    '''
     drawBack = list(range(8,12))
     freqBack= np.bincount(drawBack)
     BackDraw = np.random.choice(np.arange(len(freqBack)), 1, p=freqBack / len(drawBack), replace=False)
@@ -205,6 +208,7 @@ for num_set in np.arange(total_set):
     BackfreqObj = np.bincount(BackObj)
     BackObjDraw = np.random.choice(np.arange(len(BackfreqObj)), BackDraw, p=BackfreqObj / len(BackObj), replace=True) 
     Back_object = np.asscalar(BackDraw)
+    '''
     
     #real deal here
     drawAmo = list(range(5,8))
@@ -238,6 +242,7 @@ for num_set in np.arange(total_set):
         anchor_pose[i,5] =radians(random()*360.0)
         
     # Background objects
+    '''
     for i in np.arange(Back_object):
         file_idx = randint(0,len(back_file)-1)
         file_model = back_file[file_idx]
@@ -264,6 +269,7 @@ for num_set in np.arange(total_set):
         anchor_pose[i+num_object-1,4] =radians(random()*360.0)
         anchor_pose[i+num_object-1,5] =radians(random()*360.0)
     # FOR BACKGROUND OBJECTS 
+    '''
   
 	#Set object physics
     scene = bpy.context.scene
