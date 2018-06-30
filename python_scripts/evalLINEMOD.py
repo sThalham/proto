@@ -67,8 +67,9 @@ def boxoverlap(a, b):
 
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/T-less_Detectron/output/linemodArti01062018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
-    jsons = root + 'bbox_coco_2014_val_results.json'
+    #root = '/home/sthalham/data/T-less_Detectron/output/linemodArtiHAA07062018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
+    root = "/home/sthalham/data/results/"
+    jsons = root + 'results_lmFR_X_101_B64.json'
 
 
     json_data = open(jsons).read()
@@ -152,7 +153,8 @@ if __name__ == "__main__":
                 for i in gtCats:
                     gtCatLst[i] = gtCatLst[i] + 1
             else:
-                # legitimate cause other objects are present but not annotated
+                #print('detBoxes: ', detBoxes)
+                # legitimate, cause other objects are present but not annotated
                 detBoxes = [detBoxes[detCats.index(s)]]
                 detSco = [detSco[detCats.index(s)]]
                 detCats = [detCats[detCats.index(s)]]
@@ -161,25 +163,7 @@ if __name__ == "__main__":
                 scoCleaned = copy.deepcopy(detSco)
                 catCleaned = copy.deepcopy(detCats)
 
-                if len(detBoxes) > 1:
-                    for i, box in enumerate(detBoxes):
-                        for j, box2 in enumerate(detBoxes):
-                            if i == j:
-                                continue
-
-                            print(box)
-                            print(box2)
-                            b1 = np.array([box[0], box[1], box[0] + box[2], box[1] + box[3]])
-                            b2 = np.array([box2[0], box2[1], box2[0] + box2[2], box2[1] + box2[3]])
-                            IoU = boxoverlap(b1, b2)
-                            if IoU > 0.5 and detSco[i] > detSco[j]:
-                                boxCleaned[j] = float('nan')
-                                scoCleaned[j] = float('nan')
-                                catCleaned[j] = float('nan')
-
-                    detBoxes = [x for x in boxCleaned if str(x) != 'nan']
-                    detSco = [x for x in scoCleaned if str(x) != 'nan']
-                    detCats = [x for x in catCleaned if str(x) != 'nan']
+                #print('detCats: ', detCats)
 
                 falsePos = []
                 truePos = []
@@ -189,6 +173,7 @@ if __name__ == "__main__":
                             b1 = np.array([detBoxes[i][0], detBoxes[i][1], detBoxes[i][0] + detBoxes[i][2], detBoxes[i][1] + detBoxes[i][3]])
                             b2 = np.array([gtBoxes[j][0], gtBoxes[j][1], gtBoxes[j][0] + gtBoxes[j][2], gtBoxes[j][1] + gtBoxes[j][3]])
                             IoU = boxoverlap(b1, b2)
+                            #print('IoU: ', IoU)
                             # occurences of 2 or more instances not possible in LINEMOD
                             if IoU > 0.5:
                                 truePos.append(dC)
@@ -200,14 +185,18 @@ if __name__ == "__main__":
                 fp = falsePos
                 tp = truePos
                 fn = listDiff(gtCats, tp)
+                print('tp: ', tp)
+                print('fp: ', fp)
 
                 # indexing with "target category" only possible due to linemod annotation
-                gtCatLst[s] = gtCatLst[s] + len(gtCats)
+                gtCatLst[s] = gtCatLst[s] + 1
                 detCatLst[s] = detCatLst[s] + len(tp)
                 falsePosLst[s] = falsePosLst[s] + len(fp)
                 falseNegLst[s] = falseNegLst[s] + len(fn)
 
-                    # VISUALIZATION
+
+                # VISUALIZATION
+                '''
                 img = cv2.imread(rgbImgPath, -1)
                 for i, bb in enumerate(detBoxes):
                     cv2.rectangle(img, (int(bb[0]), int(bb[1])), (int(bb[0]) + int(bb[2]), int(bb[1]) + int(bb[3])),
@@ -221,7 +210,7 @@ if __name__ == "__main__":
                     fontColor = (0, 0, 0)
                     fontthickness = 1
                     lineType = 2
-                    gtText = "drilling machine"
+                    gtText = str(detCats[i])
 
                     fontColor2 = (255, 255, 255)
                     fontthickness2 = 3
@@ -241,11 +230,26 @@ if __name__ == "__main__":
                                     fontthickness,
                                     lineType)
 
-
-
                 cv2.imwrite('/home/sthalham/visTests/detect.jpg', img)
+                '''
+                #print('STOP')
 
-                print('STOP')
+        detAcc = detCatLst[s] / gtCatLst[s]
+        print('accuracy category ', s, ': ', detAcc)
+
+        if (detCatLst[s] + falsePosLst[s]) == 0:
+            detPre = 0.0
+        else:
+            detPre = detCatLst[s] / (detCatLst[s] + falsePosLst[s])
+        if (detCatLst[s] + falseNegLst[s]) == 0:
+            detRec = 0.0
+        else:
+            detRec = detCatLst[s] / (detCatLst[s] + falseNegLst[s])
+
+        print('precision category ', s, ': ', detPre)
+        print('recall category ', s, ': ', detRec)
+
+    print('STOP')
 
 
     # Precision = True positive / (True positive + False positive)
@@ -268,8 +272,8 @@ if __name__ == "__main__":
         else:
             detRec[ind] = detCatLst[ind] / (detCatLst[ind] + falseNegLst[ind])
 
-        print('precision category ', ind, ': ', detPre[ind])
-        print('recall category ', ind, ': ', detRec[ind])
+        #print('precision category ', ind, ': ', detPre[ind])
+        #print('recall category ', ind, ': ', detRec[ind])
 
     print('accuracy overall: ', sum(detAcc)/len(detAcc))
     print('mAP: ', sum(detPre) / len(detPre))

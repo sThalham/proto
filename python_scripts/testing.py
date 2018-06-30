@@ -18,108 +18,16 @@ import segment_normals as seg
 import time
 
 
-kin_res_x = 640
-kin_res_y = 480
-# kin_res_x = 720
-# kin_res_y = 540
+resX = 640
+resY = 480
+kin_res_x = 720
+kin_res_y = 540
 fov = 57.8
 focalLx = 579.68  # blender calculated
 focalLy = 542.31  # blender calculated
 depthCut = 1500.0
 
 np.set_printoptions(threshold=np.nan)
-
-
-def encode_area(depth, k=5, p_thresh=0.35, area_ref=5000):
-    # pass depth in mm
-
-    rows, cols = depth.shape
-    areaCol = np.zeros((rows, cols), dtype=np.uint8)
-
-    '''
-    for k=3, p~0.02
-    for k=5, p~0.5
-    tless-arti: k=5, p=0.35
-    '''
-    offset = int((k - 1) * 0.5)
-
-    pcA = create_point_cloud(depth, focalLx, focalLy, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
-
-    label = 0
-    E = seg.UnionFind()  # equivalence class object to use with seq labeling algorithm
-
-    I = seg.Image(pcA, kin_res_x, kin_res_y)
-
-    # SEQUENTIAL LABELING ALGORITHM
-    print("calling are_coplanar() on every point's kxk neighborhood")
-    for row in range(offset, I.rows - offset):
-        for col in range(offset, I.cols - offset):
-            if depth[row, col] > depthCut:
-                continue
-
-            P = I.get_kxk_neighborhood(row, col, k)
-
-            if seg.are_locally_coplanar(P, p_thresh):
-
-                I.type[row, col] = 'planar'  # it's locally coplanar with its k-neighborhood, so it's a planar point
-
-                N = I.eclass_label[row - 1, col]
-                W = I.eclass_label[row, col - 1]
-                NW = I.eclass_label[row - 1, col - 1]
-
-                if NW != -1:
-                    I.eclass_label[row, col] = NW
-                elif N != -1 and W != -1:
-                    I.eclass_label[row, col] = N
-                    E.add(N, W)
-
-                elif N != -1:
-                    I.eclass_label[row, col] = N
-
-                elif W != -1:
-                    I.eclass_label[row, col] = W
-                else:
-                    label += 1
-                    I.eclass_label[row, col] = label
-                    E.make_new(label)
-            else:
-                I.is_boundary[row, col] = True
-                I.type[row, col] = 'nonplanar'
-
-            # if row % 40 is 0:
-            #     print("we're on point (row=", row, ",col=", col, ")")
-
-    classCounter = []
-    clusterInd = np.ones((rows, cols), dtype=np.uint32) * -1
-    for row in range(0, I.rows):
-        for col in range(0, I.cols):
-            if I.coords[row, col].any() and I.eclass_label[row, col] != -1:  # if it's a planar nonzero, give it a color
-                eclass = E.leader[I.eclass_label[row, col]]
-                classCounter.append(eclass)
-                clusterInd[row, col] = eclass
-
-    clusters, surf = np.unique(clusterInd, return_counts=True)
-
-    flatCounts = surf.flatten()
-    flatCounts.sort()
-
-    for i, cl in enumerate(clusters):
-
-        if cl == -1:
-            mask = np.where(clusterInd == cl, True, False)
-            val = int(255)
-            areaCol = np.where(mask, val, areaCol)
-        elif surf[i] > area_ref:
-            continue
-        else:
-            mask = np.where(clusterInd == cl, True, False)
-            val = 255 - ((surf[i] / area_ref) * 255.0)
-            val = val.astype(dtype=np.uint8)
-            areaCol = np.where(mask, val, areaCol)
-
-    areaCol = np.where(depth > depthCut, 0, areaCol)
-
-    return areaCol
 
 
 def HHA_encoding_approx(depth, normals, fx, fy, cx, cy, ds,):
@@ -400,7 +308,7 @@ def roundPartial(value, resolution):
     return round(value / resolution) * resolution
 
 
-def manipulate_depth(fn_gt, fn_depth, fn_part):
+def manipulate_depth(fn_gt, fn_depth, fn_part, fn_mask):
 
     with open(fn_gt, 'r') as stream:
         query = yaml.load(stream)
@@ -439,19 +347,35 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     depth = depth * np.cos(np.radians(fov / kin_res_x * np.abs(uv_table[:, :, 1]))) * np.cos(
         np.radians(fov / kin_res_x * uv_table[:, :, 0]))
 
+    depth = cv2.resize(depth, (resX, resY))
+
     # erode and blur mask to get more realistic appearance
-    partmask = cv2.imread(fn_part, -1)
+    partmask = cv2.imread(fn_part, 0)
+    partmask = cv2.resize(partmask, (resX, resY))
     partmask = partmask.astype(np.float32)
+    mask = partmask > (np.median(partmask)*0.4)
+    partmask = np.where(mask, 255.0, 0.0)
     ###################################################
     # DON'T REMOVE, best normal map up to now !!! tested without lateral noise !!!
     kernel = np.ones((7, 7))
-    partmask = signal.medfilt2d(partmask, kernel_size=7)
-    partmask = cv2.morphologyEx(partmask, cv2.MORPH_CLOSE, kernel)
+    #partmask = signal.medfilt2d(partmask, kernel_size=7)
+    partmask = cv2.morphologyEx(partmask, cv2.MORPH_OPEN, kernel)
+    partmask = signal.medfilt2d(partmask, kernel_size=3)
     ###################################################
     partmask = partmask.astype(np.uint8)
 
+    scaDep = 255.0 / np.nanmax(partmask)
+    depImg = np.multiply(partmask, scaDep)
+    depI = depImg.astype(np.uint8)
+    cv2.imwrite("/home/sthalham/visTests/mask.jpg", depI)
+
     mask = partmask > 20
     depth = np.where(mask, depth, 0.0)
+
+    scaDep = 255.0 / np.nanmax(depth)
+    depImg = np.multiply(depth, scaDep)
+    depI = depImg.astype(np.uint8)
+    cv2.imwrite("/home/sthalham/visTests/depMasked.jpg", depI)
 
     onethird = cv2.resize(depth, None, fx=1/3, fy=1/3, interpolation=cv2.INTER_AREA)
     res = (((onethird / 1000) * 1.41421356) ** 2) * 1000
@@ -461,16 +385,21 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     dNonVar = np.divide(depth, res, out=np.zeros_like(depth), where=res != 0)
     dNonVar = np.round(dNonVar)
     dNonVar = np.multiply(dNonVar, res)
-
-    '''
-    according to Khoshelham et al.
-    std-dev(mm) calib:   x = y = 10, z = 18
-    std-dev(mm) uncalib: x = 14, y = 15, z = 18
-    '''
-    noise = np.multiply(dNonVar, 0.005)
+    noise = np.multiply(dNonVar, 0.0025)
     depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
 
     depthFinal = cv2.GaussianBlur(depthFinal, (7, 7), 0.75, 0.75)
+
+    # apply retardo-noise to non-object parts
+    objmask = np.load(fn_mask)
+    objmask = cv2.resize(objmask, (720, 540))
+    objmask = np.where(objmask > 0, 255, 0)
+    print(objmask.shape)
+    print(np.nanmax(objmask))
+    print(np.nanmin(objmask))
+    edges = cv2.Canny(objmask, 100, 200)
+
+    cv2.imwrite('/home/sthalham/visTests/edges.jpg', edges)
 
     # INTER_NEAREST - a nearest-neighbor interpolation
     # INTER_LINEAR - a bilinear interpolation (used by default)
@@ -555,14 +484,59 @@ def get_normal(depth_refine, fx=-1.0, fy=-1.0, cx=-1, cy=-1, for_vis=True):
 if __name__ == "__main__":
 
     #root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedScenes03052018'  # path to train samples
-    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD/patches'
+    root = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD31052018/patches'
     model = '/home/sthalham/workspace/python/src/model.yml.gz'
+
+    #compare1 = cv2.imread('/home/sthalham/data/LINEMOD/train/06/depth/0017.png', -1)
+
+    # linemod
+    #fkinx = 572.4114
+    #fkiny = 573.57043
+    #ckinx = 325.2611
+    #ckiny = 242.04899
+    #pcA = create_point_cloud(compare1, fkinx, fkiny, ckinx, ckiny, 1.0)
+    #cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
+    #visual = pcl.pcl_visualization.CloudViewing()
+    #visual.ShowMonochromeCloud(cloudA)
+
 
     compare1 = cv2.imread('/home/sthalham/data/LINEMOD/test/02/depth/0731.png', -1)
     compare2 = cv2.imread('/home/sthalham/data/LINEMOD/test/04/depth/0662.png', -1)
     compare3 = cv2.imread('/home/sthalham/data/LINEMOD/test/06/depth/0909.png', -1)
     compare4 = cv2.imread('/home/sthalham/data/LINEMOD/test/09/depth/0404.png', -1)
     compare5 = cv2.imread('/home/sthalham/data/LINEMOD/test/14/depth/0403.png', -1)
+
+    fkinx = 572.4114
+    fkiny = 573.57043
+    ckinx = 325.2611
+    ckiny = 242.04899
+
+    pcA = create_point_cloud(compare1, fkinx, fkiny, ckinx, ckiny, 1.0)
+    cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
+    visual = pcl.pcl_visualization.CloudViewing()
+    visual.ShowMonochromeCloud(cloudA)
+
+    sca = 255.0 / np.amax(compare1)
+    depth_scaled = np.multiply(compare1, sca)
+    depth_int8 = depth_scaled.astype(np.uint8)
+    cv2.imwrite('/home/sthalham/visTests/depth1.png', depth_int8)
+    sca = 255.0 / np.amax(compare2)
+    depth_scaled = np.multiply(compare2, sca)
+    depth_int8 = depth_scaled.astype(np.uint8)
+    cv2.imwrite('/home/sthalham/visTests/depth2.png', depth_int8)
+    sca = 255.0 / np.amax(compare3)
+    depth_scaled = np.multiply(compare3, sca)
+    depth_int8 = depth_scaled.astype(np.uint8)
+    cv2.imwrite('/home/sthalham/visTests/depth3.png', depth_int8)
+    sca = 255.0 / np.amax(compare4)
+    depth_scaled = np.multiply(compare4, sca)
+    depth_int8 = depth_scaled.astype(np.uint8)
+    cv2.imwrite('/home/sthalham/visTests/depth4.png', depth_int8)
+    sca = 255.0 / np.amax(compare5)
+    depth_scaled = np.multiply(compare5, sca)
+    depth_int8 = depth_scaled.astype(np.uint8)
+    cv2.imwrite('/home/sthalham/visTests/depth5.png', depth_int8)
+
 
     rowcom, colcom = compare1.shape
     # compare1 = np.multiply(compare1, 0.1)
@@ -586,6 +560,12 @@ if __name__ == "__main__":
     ckinx = 325.2611
     ckiny = 242.04899
 
+    pcA = create_point_cloud(compare1, fkinx, fkiny, ckinx, ckiny, 1.0)
+    cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
+    visual = pcl.pcl_visualization.CloudViewing()
+    visual.ShowMonochromeCloud(cloudA)
+
+    '''
     normImg1, dptComp1 = get_normal(compare1, fx=fkinx, fy=fkiny, cx=(colcom * 0.5), cy=(rowcom * 0.5), for_vis=True)
     areaCol = encode_area(dptComp1)
     cv2.imwrite('/home/sthalham/visTests/clusteredReal1.png', areaCol)
@@ -616,7 +596,7 @@ if __name__ == "__main__":
     gravImg = geoCooFrame(normImg5, dptComp5)
     cv2.imwrite('/home/sthalham/visTests/gravImg5.png', gravImg)
 
-    '''
+    
     encoded1 = HHA_encoding_approx(dptComp1, normImg1, fkinx, fkiny, (colcom * 0.5), (rowcom * 0.5), 1.0)
     cv2.imwrite('/home/sthalham/visTests/dispReal1.png', encoded1[:, :, 0])
     cv2.imwrite('/home/sthalham/visTests/heiReal1.png', encoded1[:, :, 1])
@@ -686,12 +666,13 @@ if __name__ == "__main__":
             gtfile = gtPath + '/' + fileInd
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
+            maskfile = maskPath + redname + "_mask.npy"
 
             with open(gtfile, 'r') as stream:
                 query = yaml.load(stream)
                 camRot = query['camera_rot']
 
-            depth_refine, bboxes, poses, mask_ids = manipulate_depth(gtfile, depfile, partfile)
+            depth_refine, bboxes, poses, mask_ids = manipulate_depth(gtfile, depfile, partfile, maskfile)
             depth_refine = np.multiply(depth_refine, 1000.0)  # to millimeters
 
             sca = 255.0 / np.amax(depth_refine)
@@ -701,40 +682,24 @@ if __name__ == "__main__":
 
             rows, cols = depth_refine.shape
 
-            '''
-            depthcanny = cv2.Canny(depth_int8, 100, 200)
-            cv2.imwrite('/home/sthalham/cannydepth.png', depthcanny)
-            '''
-            # depth_blur = cv2.GaussianBlur(depth_refine, (9, 9), 2.5, 2.5)
+            normImg, depth_inpaint = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
+                            for_vis=False)
+            sca = 255.0 /np.nanmax(normImg)
+            normImg = np.multiply(normImg, sca)
+            imgI = normImg.astype(np.uint8)
+            cv2.imwrite('/home/sthalham/visTests/normarti.png', imgI)
 
-            # pcA = create_point_cloud(depth_refine, focalLx, focalLy, kin_res_x*0.5, kin_res_y*0.5, 1.0)
-            # cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
-            # visual = pcl.pcl_visualization.CloudViewing()
-            # visual.ShowMonochromeCloud(cloudA)
+            #pcA = create_point_cloud(depth_refine, focalLx, focalLy, kin_res_x*0.5, kin_res_y*0.5, 1.0)
+            #cloudA = pcl.PointCloud(np.array(pcA, dtype=np.float32))
+            #visual = pcl.pcl_visualization.CloudViewing()
+            #visual.ShowMonochromeCloud(cloudA)
 
             # pcC = create_point_cloud(compare1, fkinx, fkiny, kin_res_x * 0.5, kin_res_y * 0.5, 1.0)
             # cloudC = pcl.PointCloud(np.array(pcC, dtype=np.float32))
             # visual1 = pcl.pcl_visualization.CloudViewing()
             # visual1.ShowMonochromeCloud(cloudC)
 
-            focalL = 580        # according to microsoft
-            focalLx = 579.68    # blender calculated
-            focalLy = 542.31    # blender calculated
-            camRot = np.asarray(camRot).reshape(4, 4)
-            R2w = camRot[0:3, 0:3]
-            T2w = camRot[0:3, 3]
 
-            start_time = time.time()
-            normImg, depth_inpaint = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5),
-                            for_vis=False)
-            elapsed_time = time.time() - start_time
-            print('normal calculation time: ', elapsed_time)
-            sca = 255.0 /np.nanmax(normImg)
-            normImg = np.multiply(normImg, sca)
-            imgI = normImg.astype(np.uint8)
-            cv2.imwrite('/home/sthalham/visTests/normarti.png', imgI)
-            print(np.nanmax(imgI))
-            print(np.nanmin(imgI))
 
             # encoded = HHA_encoding(depth_refine, normImg, focalLx, focalLy, (kin_res_x * 0.5), (kin_res_y * 0.5), 1.0, R2w, T2w)
             # cv2.imwrite('/home/sthalham/disparity.png', encoded[:, :, 0])
@@ -742,6 +707,7 @@ if __name__ == "__main__":
             # cv2.imwrite('/home/sthalham/gravity.png', encoded[:, :, 2])
             # cv2.imwrite('/home/sthalham/HHA.png', encoded)
 
+            '''
             start_time = time.time()
             areaCol = encode_area(depth_inpaint)
             elapsed_time = time.time() - start_time
@@ -751,7 +717,7 @@ if __name__ == "__main__":
             cv2.imwrite('/home/sthalham/visTests/gravArti.png', gravImg)
 
             print('testitest')
-            '''
+            
             
             edge_detection = cv2.ximgproc.createStructuredEdgeDetection(model)
 
