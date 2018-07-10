@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     #root = '/home/sthalham/data/T-less_Detectron/output/linemodArtiHAA07062018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
     root = "/home/sthalham/data/results/"
-    jsons = root + 'results_lmFR_X_101_B64.json'
+    jsons = root + 'results_lm_B5515_X_101_B64.json'
 
 
     json_data = open(jsons).read()
@@ -153,6 +153,7 @@ if __name__ == "__main__":
                 for i in gtCats:
                     gtCatLst[i] = gtCatLst[i] + 1
             else:
+
                 #print('detBoxes: ', detBoxes)
                 # legitimate, cause other objects are present but not annotated
                 detBoxes = [detBoxes[detCats.index(s)]]
