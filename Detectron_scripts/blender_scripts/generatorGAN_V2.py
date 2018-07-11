@@ -8,7 +8,8 @@ from random import uniform
 import cv2
 import yaml
 import itertools
-from math import radians,degrees,tan,cos, sin, atan, pi
+import mathutils
+from math import radians,degrees,tan,cos, sin, atan, pi, atan2, sqrt
 from numpy.linalg import inv
 
 
@@ -141,6 +142,8 @@ if not(os.path.exists(target_dir+"/part")):
 
 sub = os.listdir(train_dir)
 
+breakit = 0
+
 for s in sub:
         rgbPath = train_dir + '/' + s + "/rgb/"
         depPath = train_dir + '/' + s + "/depth/"
@@ -228,52 +231,71 @@ for s in sub:
                 if obj.type == 'MESH':
                     obj_object= bpy.data.objects[obj.name]
             
-                if obj_object.pass_index>1:
+                if obj.name == 'InvisibleCube':
+                    obj_object= bpy.data.objects[obj.name]
                     
-                    obj_object.location.x= - cam_T[0] * 0.001
-                    obj_object.location.y= - cam_T[1] * 0.001
-                    obj_object.location.z = cam_T[2] * 0.001
-                    obj_object.matrix_world[0][0:3] = cam_R[0:3]
-                    obj_object.matrix_world[1][0:3] = cam_R[3:6]
-                    obj_object.matrix_world[2][0:3] = cam_R[6:9]
-                 
+
+                if obj.type == 'CAMERA' and  obj.name=='cam_L':
+                    obj_object= bpy.data.objects[obj.name]
+                    obj_object.location.x = 0.0
+                    obj_object.location.y = 0.0
+                    obj_object.location.z = 0.0
+                    obj_object.rotation_euler.x = pi
+                    obj_object.rotation_euler.y = 0.0
+                    obj_object.rotation_euler.z = 0.0
+                    scene.update
+                    
+                if obj_object.pass_index>1:
+                    obj_object= bpy.data.objects[obj.name]
+                    
+                    obj_object.rotation_euler.x = atan2(cam_R[7], cam_R[8])
+                    obj_object.rotation_euler.y = atan2(-cam_R[6], sqrt(cam_R[7] ** 2 + cam_R[8] ** 2))
+                    obj_object.rotation_euler.z = atan2(cam_R[3], cam_R[0])
+                    obj_object.location.x= cam_T[0]*0.001
+                    obj_object.location.y= cam_T[1]*0.001
+                    obj_object.location.z = cam_T[2]*0.001
+                    
+                    scene.update()
+                    
                     # assign different color
                     rand_color = (random(), random(), random())
                     obj_object.active_material.diffuse_color = rand_color
                     if obj_object.pass_index > (1):
                         obj_object.pass_index = 0
                  
-                if obj.name == 'InvisibleCube':
-                    obj_object.rotation_euler.x = 0.0 
-                    obj_object.rotation_euler.y = 0.0
-                    obj_object.rotation_euler.z = 0.0
-
-                if obj.type == 'CAMERA' and  obj.name=='cam_L':
-                    obj_object = bpy.data.objects[obj.name]
-                    obj_object.location.x= 0.0
-                    obj_object.location.y= 0.0
-                    obj_object.location.z = 0.0
                     
                 if obj.name =='Plane.Ground':
-                    if bpy.data.objects['cam_L'].matrix_world[2][3] < 0.0:
-                        bpy.data.objects['Plane.Ground'].location.z = - offZ - (( bpy.data.objects['Plane.Ground'].dimensions[2] * bpy.data.objects['Plane.Ground'].scale[2])*0.5)
-                    else:
-                        bpy.data.objects['Plane.Ground'].location.z = offZ + (( bpy.data.objects['Plane.Ground'].dimensions[2] * bpy.data.objects['Plane.Ground'].scale[2])*0.5) 
-
-                if obj.name =='Plane.Room.001':
-                    gegk = bpy.data.objects['cam_L'].matrix_world[1][3]
-                    anka = bpy.data.objects['cam_L'].matrix_world[0][3]
-                    ang = (gegk/anka)
-                    ang = atan(ang)
+                    obj_object= bpy.data.objects[obj.name]
+                    obj_object.rotation_euler.x = atan2(cam_R[7], cam_R[8])
+                    obj_object.rotation_euler.y = atan2(-cam_R[6], sqrt(cam_R[7] ** 2 + cam_R[8] ** 2))
+                    obj_object.rotation_euler.z = atan2(cam_R[3], cam_R[0])
+                    print('rotY: ', obj_object.rotation_euler.y)
+                    add2Z = offZ * cos(obj_object.rotation_euler.x)
+                    if add2Z < 0.0:
+                        add2Z * -1.0
+                    addY2Z = offY * sin(obj_object.rotation_euler.x)
+                    if addY2Z < 0.0:
+                        addY2Z * -1.0
+                    obj_object.location.x= cam_T[0]*0.001 
+                    obj_object.location.y= cam_T[1]*0.001 + offZ * sin(obj_object.rotation_euler.x) + offY * cos(obj_object.rotation_euler.x) + 0.01 * cos(obj_object.rotation_euler.x) 
+                    obj_object.location.z = cam_T[2]*0.001 + add2Z + addY2Z + 0.01 * sin(obj_object.rotation_euler.x) 
                     
-                    if offX > offY:
-                        obShift = offX * 0.5
-                    else:
-                        obShift = offY * 0.5
+                    scene.update()
+
+                #if obj.name =='Plane.Room.001':
+                #    gegk = bpy.data.objects['cam_L'].matrix_world[1][3]
+                #    anka = bpy.data.objects['cam_L'].matrix_world[0][3]
+                #    ang = (gegk/anka)
+                #    ang = atan(ang)
+                    
+                #    if offX > offY:
+                #        obShift = offX * 0.5
+                #    else:
+                #        obShift = offY * 0.5
                         
-                    obj_object.location.x = (- obShift * sin(ang))
-                    obj_object.location.y = (- obShift * cos(ang))
-                    obj_object.rotation_euler.z= ang * (180/pi)
+                #    obj_object.location.x = (- obShift * sin(ang))
+                #    obj_object.location.y = (- obShift * cos(ang))
+                #    obj_object.rotation_euler.z= ang * (180/pi)
                     
                         
 
@@ -281,6 +303,7 @@ for s in sub:
             nodes = tree.nodes
 
             #prefix='{:08}_'.format(index)
+            print(s)
             prefix = s + ss
 
             maskfile = os.path.join(target_dir+'/mask' , 'mask.png')
@@ -326,7 +349,7 @@ for s in sub:
                         os.rename(auto_file, maskfile)
                         os.rename(auto_file_depth, depthfile)
                         os.rename(auto_file_part, partfile)
-                        
-        break
+                
+      
 
  
