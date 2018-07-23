@@ -172,6 +172,14 @@ for s in sub:
             elif ss.startswith('0'):
                 ss = ss[1:]
             ss = ss[:-4]
+            
+            prefix = s + imgname
+            prefix = prefix[:-4]
+            file2create = target_dir + '/depth/' + prefix +'_depth.exr'
+            
+            if os.path.isfile(file2create):
+                print(file2create, " exists... skipping")
+                continue
 
             calib = opYML[int(ss)]
             K = calib["cam_K"]
@@ -180,6 +188,7 @@ for s in sub:
             fykin = K[4]
             cxx = K[2]
             cyy = K[5]
+            elev = calib["elev"]
             
             annot = gtYML[int(ss)]
             annot = annot[0]
@@ -257,6 +266,8 @@ for s in sub:
                     
                     scene.update()
                     
+                    print(obj_object.matrix_world)
+                    
                     # assign different color
                     rand_color = (random(), random(), random())
                     obj_object.active_material.diffuse_color = rand_color
@@ -269,45 +280,51 @@ for s in sub:
                     obj_object.rotation_euler.x = atan2(cam_R[7], cam_R[8])
                     obj_object.rotation_euler.y = atan2(-cam_R[6], sqrt(cam_R[7] ** 2 + cam_R[8] ** 2))
                     obj_object.rotation_euler.z = atan2(cam_R[3], cam_R[0])
-                    print('rotY: ', obj_object.rotation_euler.y)
-                    add2Z = offZ * cos(obj_object.rotation_euler.x)
-                    if add2Z < 0.0:
-                        add2Z * -1.0
-                    addY2Z = offY * sin(obj_object.rotation_euler.x)
-                    if addY2Z < 0.0:
-                        addY2Z * -1.0
+                   
+                    theta = elev * (pi/180)
+                 
+                    addY2Y = offY * sin(theta)
+                    addY2Z = offY * cos(theta)
+                    addZ2Y = offZ * cos(theta)
+                    addZ2Z = offZ * sin(theta)
+                 
                     obj_object.location.x= cam_T[0]*0.001 
-                    obj_object.location.y= cam_T[1]*0.001 + offZ * sin(obj_object.rotation_euler.x) + offY * cos(obj_object.rotation_euler.x) + 0.01 * cos(obj_object.rotation_euler.x) 
-                    obj_object.location.z = cam_T[2]*0.001 + add2Z + addY2Z + 0.01 * sin(obj_object.rotation_euler.x) 
+                    obj_object.location.y=  cam_T[1]*0.001 + sqrt(addY2Y**2 + addZ2Y**2) #+ planeSin 
+                    obj_object.location.z = cam_T[2]*0.001 + sqrt(addZ2Z**2  + addY2Z**2) # + planeCos
                     
                     scene.update()
-
-                #if obj.name =='Plane.Room.001':
-                #    gegk = bpy.data.objects['cam_L'].matrix_world[1][3]
-                #    anka = bpy.data.objects['cam_L'].matrix_world[0][3]
-                #    ang = (gegk/anka)
-                #    ang = atan(ang)
                     
-                #    if offX > offY:
-                #        obShift = offX * 0.5
-                #    else:
-                #        obShift = offY * 0.5
-                        
-                #    obj_object.location.x = (- obShift * sin(ang))
-                #    obj_object.location.y = (- obShift * cos(ang))
-                #    obj_object.rotation_euler.z= ang * (180/pi)
+                if obj.name =='Plane.Room.001':
+                    obj_object= bpy.data.objects[obj.name]
+                                       
+                    theta = elev * (pi/180)
+                    print('theta: ', elev)
                     
+                    obj_object.rotation_euler.x = pi + theta
+                    obj_object.rotation_euler.y = 0.0
+                    obj_object.rotation_euler.z = 0.0
+                    
+                    addY2Y = offY * sin(theta)
+                    addY2Z = offY * cos(theta)
+                    addZ2Y = offZ * cos(theta)
+                    addZ2Z = offZ * sin(theta)
+                 
+                    obj_object.location.x= cam_T[0]*0.001 
+                    obj_object.location.y=  cam_T[1]*0.001 - sqrt(addY2Y**2 + addZ2Y**2)
+                    obj_object.location.z = cam_T[2]*0.001 + sqrt(addY2Z**2 + addZ2Z**2)
+                    
+                    scene.update()
                         
-
             tree = bpy.context.scene.node_tree
             nodes = tree.nodes
 
             #prefix='{:08}_'.format(index)
             print(s)
-            prefix = s + ss
+            prefix = s + imgname
+            prefix = prefix[:-4]
 
             maskfile = os.path.join(target_dir+'/mask' , 'mask.png')
-            depthfile = os.path.join(target_dir+'/depth', prefix+'depth.exr')
+            depthfile = os.path.join(target_dir+'/depth', prefix+'_depth.exr')
             partfile= os.path.join(target_dir+"/part", prefix+'part.png')
 
             for ob in scene.objects:
@@ -317,12 +334,12 @@ for s in sub:
                         bpy.context.scene.camera = ob
                         print('Set camera %s for IR' % ob.name )
                         file_L = os.path.join(sample_dir , ob.name )
-                        auto_file = os.path.join(sample_dir, ob.name+'0000.png')
-                        node= nodes['maskout']
-                        node.file_slots[0].path = ob.name
-                        node_mix = nodes['ColorRamp']
-                        link_mask= tree.links.new(node_mix.outputs["Image"], node.inputs[0])
-                        node.base_path=sample_dir                  
+                        #auto_file = os.path.join(sample_dir, ob.name+'0000.png')
+                        #node= nodes['maskout']
+                        #node.file_slots[0].path = ob.name
+                        #node_mix = nodes['ColorRamp']
+                        #link_mask= tree.links.new(node_mix.outputs["Image"], node.inputs[0])
+                        #node.base_path=sample_dir                  
                   
                         auto_file_depth = os.path.join(sample_dir+'/temp/', ob.name+'0000.exr')
                         node= nodes['depthout']
@@ -332,23 +349,23 @@ for s in sub:
                         node.base_path=sample_dir+'/temp/'
                     
                   
-                        auto_file_part = os.path.join(sample_dir+'/temp/', ob.name+'0000.png')
-                        node= nodes['rgbout']
-                        node.file_slots[0].path = ob.name
-                        node_mix = nodes['Render Layers']
-                        link_part = tree.links.new(node_mix.outputs["Diffuse Color"], node.inputs[0])
-                        link_part = tree.links.new(node_mix.outputs["Image"], node.inputs[0])
-                        node.base_path=sample_dir+'/temp/'
+                        #auto_file_part = os.path.join(sample_dir+'/temp/', ob.name+'0000.png')
+                        #node= nodes['rgbout']
+                        #node.file_slots[0].path = ob.name
+                        #node_mix = nodes['Render Layers']
+                        #link_part = tree.links.new(node_mix.outputs["Diffuse Color"], node.inputs[0])
+                        #link_part = tree.links.new(node_mix.outputs["Image"], node.inputs[0])
+                        #node.base_path=sample_dir+'/temp/'
                   
                         scene.render.filepath = file_L
                         bpy.ops.render.render( write_still=True )
-                        tree.links.remove(link_mask)
+                        #tree.links.remove(link_mask)
                         tree.links.remove(link_depth)
-                        tree.links.remove(link_part)
+                        #tree.links.remove(link_part)
                   
-                        os.rename(auto_file, maskfile)
+                        #os.rename(auto_file, maskfile)
                         os.rename(auto_file_depth, depthfile)
-                        os.rename(auto_file_part, partfile)
+                        #os.rename(auto_file_part, partfile)
                 
       
 
