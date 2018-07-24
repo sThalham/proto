@@ -1,5 +1,6 @@
 import sys
 import os
+import subprocess
 import yaml
 import cv2
 import numpy as np
@@ -11,19 +12,170 @@ import copy
 import transforms3d as tf3d
 import time
 import itertools
+import pcl
+from pcl import pcl_visualization
 
 import OpenEXR, Imath
+from pathlib import Path
 
 #kin_res_x = 640
 #kin_res_y = 480
-kin_res_x = 720
-kin_res_y = 540
+resX = 640
+resY = 480
 # fov = 1.0088002681732178
 fov = 57.8
-focalLx = 579.68  # blender calculated
-focalLy = 542.31  # blender calculated
+fxkin = 579.68  # blender calculated
+fykin = 542.31  # blender calculated
+cxkin = 320
+cykin = 240
+depthCut = 1500.0
 
 np.set_printoptions(threshold=np.nan)
+
+
+def encodeImage(depth):
+    img = np.zeros((resY, resX, 3), dtype=np.uint8)
+
+    normImg, depImg = get_normal(depth, fxkin, fykin, cxkin, cykin, for_vis=True)
+    img[:, :, 0] = compute_disparity(depImg)
+    img[:, :, 1] = encode_area(depImg)
+    img[:, :, 2] = compute_angle2gravity(normImg, depImg)
+
+    return img
+
+
+def create_point_cloud(depth, fx, fy, cx, cy, ds):
+
+    rows, cols = depth.shape
+
+    depRe = depth.reshape(rows * cols)
+    zP = np.multiply(depRe, ds)
+
+    x, y = np.meshgrid(np.arange(0, cols, 1), np.arange(0, rows, 1), indexing='xy')
+    yP = y.reshape(rows * cols) - cy
+    xP = x.reshape(rows * cols) - cx
+    yP = np.multiply(yP, zP)
+    xP = np.multiply(xP, zP)
+    yP = np.divide(yP, fy)
+    xP = np.divide(xP, fx)
+
+    cloud_final = np.transpose(np.array((xP, yP, zP)))
+
+    return cloud_final
+
+
+def encode_area(depth):
+
+    onethird = cv2.resize(depth, None, fx=1 / 3, fy=1 / 3, interpolation=cv2.INTER_AREA)
+    pc = create_point_cloud(onethird, fxkin, fykin, cxkin, cykin, 1.0)
+    cloud = pcl.PointCloud(np.array(pc, dtype=np.float32))
+    CPPInput = "/home/sthalham/workspace/proto/python_scripts/CPP_workaround/bin/tempCloud.pcd"
+    CPPOutput = "/home/sthalham/workspace/proto/python_scripts/CPP_workaround/bin/output.pcd"
+    pcl.save(cloud, CPPInput)
+
+    args = ("/home/sthalham/workspace/proto/python_scripts/CPP_workaround/bin/conditional_euclidean_clustering", CPPInput, CPPOutput)
+    popen = subprocess.Popen(args, stdout=subprocess.PIPE)
+    popen.wait()
+    cloudNew = pcl.load_XYZI(CPPOutput)
+    pcColor = cloudNew.to_array()
+    inten = pcColor[:, 3]
+    inten = np.reshape(inten, (int(resY/3), int(resX/3)))
+
+    clusters, surf = np.unique(inten, return_counts=True)
+
+    flat = surf.flatten()
+    flat.sort()
+    area_ref = np.mean(flat[0:-1])
+    area_max = np.nanmax(surf)
+    areaCol = np.ones(inten.shape, dtype=np.uint8)
+
+    for i, cl in enumerate(clusters):
+        if surf[i] < area_ref:
+            mask = np.where(inten == cl, True, False)
+            val = 255.0 - ((surf[i] / area_ref) * 127.5)  # prob.: 255 - ...
+            val = val.astype(dtype=np.uint8)
+            areaCol = np.where(mask, val, areaCol)
+
+        else:
+            mask = np.where(inten == cl, True, False)
+            val = 127.5 - ((surf[i] / area_max) * 126.5)  # prob.: 255 - ...
+            val = val.astype(dtype=np.uint8)
+            areaCol = np.where(mask, val, areaCol)
+
+    areaCol = cv2.resize(areaCol, (resX, resY), interpolation=cv2.INTER_NEAREST)
+
+    areaCol = np.where(depth > depthCut, 0, areaCol)
+
+    return areaCol
+
+
+def compute_disparity(depth):
+    # calculate disparity
+    depthFloor = 100.0
+    depthCeil = depthCut
+
+    disparity = np.ones((depth.shape), dtype=np.float32)
+    disparity = np.divide(disparity, depth)
+    disparity = disparity - (1 / depthCeil)
+    denom = (1 / depthFloor) - (1 / depthCeil)
+    disparity = np.divide(disparity, denom)
+    disparity = np.where(np.isinf(disparity), 0.0, disparity)
+    dispSca = disparity - np.nanmin(disparity)
+    maxV = 255.0 / np.nanmax(dispSca)
+    scatemp = np.multiply(dispSca, maxV)
+    disp_final = scatemp.astype(np.uint8)
+
+    return disp_final
+
+
+def compute_angle2gravity(normals, depth):
+    r, c, p = normals.shape
+    mask = depth < depthCut
+    normals[:, :, 0] = np.where(mask, normals[:, :, 0], np.NaN)
+    normals[:, :, 1] = np.where(mask, normals[:, :, 1], np.NaN)
+    normals[:, :, 2] = np.where(mask, normals[:, :, 2], np.NaN)
+
+    angEst = np.zeros(normals.shape, dtype=np.float32)
+    angEst[:, :, 2] = 1.0
+    ang = (45.0, 45.0, 45.0, 45.0, 45.0, 15.0, 15.0, 15.0, 15.0, 15.0, 5.0, 5.0)
+    for th in ang:
+        angtemp = np.einsum('ijk,ijk->ij', normals, angEst)
+        angEstNorm = np.linalg.norm(angEst, axis=2)
+        normalsNorm = np.linalg.norm(normals, axis=2)
+        normalize = np.multiply(normalsNorm, angEstNorm)
+        angDif = np.divide(angtemp, normalize)
+
+        np.where(angDif < 0.0, angDif + 1.0, angDif)
+        angDif = np.arccos(angDif)
+        angDif = np.multiply(angDif, (180 / math.pi))
+
+        cond1 = (angDif < th)
+        cond1_ = (angDif > (180.0 - th))
+        cond2 = (angDif > (90.0 - th)) & (angDif < (90.0 + th))
+        cond1 = np.repeat(cond1[:, :, np.newaxis], 3, axis=2)
+        cond1_ = np.repeat(cond1_[:, :, np.newaxis], 3, axis=2)
+        cond2 = np.repeat(cond2[:, :, np.newaxis], 3, axis=2)
+
+        NyPar1 = np.extract(cond1, normals)
+        NyPar2 = np.extract(cond1_, normals)
+        NyPar = np.concatenate((NyPar1, NyPar2))
+        npdim = (NyPar.shape[0] / 3)
+        NyPar = np.reshape(NyPar, (int(npdim), 3))
+        NyOrt = np.extract(cond2, normals)
+        nodim = (NyOrt.shape[0] / 3)
+        NyOrt = np.reshape(NyOrt, (int(nodim), 3))
+
+        cov = (np.transpose(NyOrt)).dot(NyOrt) - (np.transpose(NyPar)).dot(NyPar)
+        u, s, vh = np.linalg.svd(cov)
+        angEst = np.tile(u[:, 2], r * c).reshape((r, c, 3))
+
+    angDifSca = angDif - np.nanmin(angDif)
+    maxV = 255.0 / np.nanmax(angDifSca)
+    scatemp = np.multiply(angDifSca, maxV)
+    gImg = scatemp.astype(np.uint8)
+    gImg[gImg is np.NaN] = 0
+
+    return gImg
 
 
 def manipulate_depth(fn_gt, fn_depth, fn_part):
@@ -57,31 +209,27 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     depth = np.fromstring(redstr, dtype=np.float32)
     depth.shape = (size[1], size[0])
 
-    centerX = kin_res_x / 2.0
-    centerY = kin_res_y / 2.0
+    centerX = depth.shape[1] / 2.0
+    centerY = depth.shape[0] / 2.0
 
-    uv_table = np.zeros((kin_res_y, kin_res_x, 2), dtype=np.int16)
-    column = np.arange(0, kin_res_y)
-    uv_table[:, :, 1] = np.arange(0, kin_res_x) - centerX
+    uv_table = np.zeros((depth.shape[0], depth.shape[1], 2), dtype=np.int16)
+    column = np.arange(0, depth.shape[0])
+    uv_table[:, :, 1] = np.arange(0, depth.shape[1]) - centerX
     uv_table[:, :, 0] = column[:, np.newaxis] - centerY
     uv_table = np.abs(uv_table)
 
-    depth = depth * np.cos(np.radians(fov / kin_res_x * np.abs(uv_table[:, :, 1]))) * np.cos(
-        np.radians(fov / kin_res_x * uv_table[:, :, 0]))
+    depth = depth * np.cos(np.radians(fov / depth.shape[1] * np.abs(uv_table[:, :, 1]))) * np.cos(
+        np.radians(fov / depth.shape[1] * uv_table[:, :, 0]))
 
     if np.nanmean(depth) < 0.5 or np.nanmean(depth) > 2.0:
         print('invalid train image; range is wrong')
         return None, None, None, None
 
-    '''
-    scaDep = 255.0 / np.nanmax(depth)
-    depImg = np.multiply(depth, scaDep)
-    depI = depImg.astype(np.uint8)
-    cv2.imwrite("/home/sthalham/visTests/depIdeal.jpg", depI)
-    '''
+    depth = cv2.resize(depth, (resX, resY))
 
     # erode and blur mask to get more realistic appearance
     partmask = cv2.imread(fn_part, 0)
+    partmask = cv2.resize(partmask, (resX, resY))
     partmask = partmask.astype(np.float32)
     mask = partmask > (np.median(partmask)*0.4)
     partmask = np.where(mask, 255.0, 0.0)
@@ -136,7 +284,8 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     # INTER_AREA - resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire’-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method.
     # INTER_CUBIC - a bicubic interpolation over 4x4 pixel neighborhood
     # INTER_LANCZOS4 - a Lanczos interpolation over 8x8 pixel neighborhood
-    depthFinal = cv2.resize(depthFinal, None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST)
+    #depthFinal = cv2.resize(depthFinal, None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST)
+    depthFinal = cv2.resize(depthFinal, (resX, resY), interpolation=cv2.INTER_NEAREST)
 
     return depthFinal, bboxes, poses, mask_ids
 
@@ -205,7 +354,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     # cam_angle = np.arccos(cross[:, :, 2])
     # cross[np.abs(cam_angle) > math.radians(75)] = 0  # high normal cut
     # cross[depth_refine <= 300] = 0  # 0 and near range cut
-    cross[depth_refine > 2000] = 0  # far range cut
+    cross[depth_refine > depthCut] = 0  # far range cut
     if not for_vis:
         scaDep = 1.0 / np.nanmax(depth_refine)
         depth_refine = np.multiply(depth_refine, scaDep)
@@ -256,10 +405,13 @@ if __name__ == "__main__":
     for fileInd in os.listdir(root):
         if fileInd.endswith(".yaml"):
 
+            print('Processing next image')
+
             start_time = time.time()
             gloCo = gloCo + 1
 
             redname = fileInd[:-8]
+
             gtfile = gtPath + '/' + fileInd
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
@@ -268,7 +420,7 @@ if __name__ == "__main__":
             depth_refine, bboxes, poses, mask_ids = manipulate_depth(gtfile, depfile, partfile)
 
             if bboxes is None:
-                excludedImgs.append(fileInd)
+                excludedImgs.append(int(redname))
                 continue
 
             depth_refine = np.multiply(depth_refine, 1000.0)  # to millimeters
@@ -277,100 +429,93 @@ if __name__ == "__main__":
             newredname = redname
 
 
-            focalL = 580.0  # according to microsoft
-            normImg, dptImg = get_normal(depth_refine, fx=focalLx, fy=focalLy, cx=(kin_res_x * 0.5), cy=(kin_res_y * 0.5), for_vis=False)
+            fileName = '/home/sthalham/data/T-less_Detectron/linemodHAA/train/' + newredname + '.jpg'
+            myFile = Path(fileName)
+            if myFile.exists():
+                print('File exists, skip encoding and safing.')
 
-            scaNorm = 255.0 / np.nanmax(normImg)
-            normImg = np.multiply(normImg, scaNorm)
-            imgI = normImg.astype(np.uint8)
-            '''
-            scaDep = 255.0 / np.nanmax(depth_refine)
-            depImg = np.multiply(depth_refine, scaDep)
-            depI = depImg.astype(np.uint8)
-            '''
+            else:
+                imgI = encodeImage(depth_refine)
+                continue
+                #cv2.imwrite(fileName, imgI)
 
-                #drawN = [1, 1, 1, 1, 2]
-                #freq = np.bincount(drawN)
-                #rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
-            rnd = 1
+                #cv2.imwrite('/home/sthalham/visTests/disp.jpg', imgI[:,:,0])
+                #cv2.imwrite('/home/sthalham/visTests/area.jpg', imgI[:, :, 1])
+                #cv2.imwrite('/home/sthalham/visTests/grav.jpg', imgI[:, :, 2])
+                #cv2.imwrite('/home/sthalham/visTests/HAA.jpg', imgI)
 
-                # change drawN if you want a data split
-                # print("storage choice: ", rnd)
-            if rnd == 1:
+                    #imgPath = '/home/sthalham/data/T-less_Detectron/linemodTrain06062018/train/' + newredname + '.jpg'
 
-                imgPath = '/home/sthalham/data/T-less_Detectron/linemodBGTrain05062018/train/' + newredname + '.jpg'
-                imgID = int(newredname)
-                imgName = newredname + '.jpg'
+            imgID = int(newredname)
+            imgName = newredname + '.jpg'
 
-                for bbox in bboxes:
-                    objID = np.asscalar(bbox[0]) + 1
-                    x1 = np.asscalar(bbox[2])
-                    y1 = np.asscalar(bbox[1])
-                    x2 = np.asscalar(bbox[4])
-                    y2 = np.asscalar(bbox[3])
-                    nx1 = bbox[2]
-                    ny1 = bbox[1]
-                    nx2 = bbox[4]
-                    ny2 = bbox[3]
-                    w = (x2-x1)
-                    h = (y2-y1)
-                    bb = [x1, y1, w, h]
-                    area = w * h
-                    npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
-                    seg = npseg.tolist()
+            # bb scaling because of image scaling
+            bbsca = 640.0/720.0
+            for bbox in bboxes:
+                objID = np.asscalar(bbox[0]) + 1
+                bbox = (bbox * bbsca).astype(int)
+                x1 = np.asscalar(bbox[2])
+                y1 = np.asscalar(bbox[1])
+                x2 = np.asscalar(bbox[4])
+                y2 = np.asscalar(bbox[3])
+                nx1 = bbox[2]
+                ny1 = bbox[1]
+                nx2 = bbox[4]
+                ny2 = bbox[3]
+                w = (x2-x1)
+                h = (y2-y1)
+                bb = [x1, y1, w, h]
+                area = w * h
+                npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
+                seg = npseg.tolist()
 
-                    annoID = annoID + 1
-                    tempTA = {
-                        "id": annoID,
-                        "image_id": imgID,
-                        "category_id": objID,
-                        "bbox": bb,
-                        "segmentation": [seg],
-                        "area": area,
-                        "iscrowd": 0
-                    }
-                    dict["annotations"].append(tempTA)
-                    '''
-                    cv2.rectangle(depI, (x1, y1), (x2, y2), ( 255, 255, 0), 2, 1)
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    bottomLeftCornerOfText = (x1, y1)
-                    fontScale = 1
-                    fontColor = (255, 255, 0)
-                    fontthickness = 1
-                    lineType = 2
-                    gtText = str(objID)
-                    cv2.putText(depI, gtText,
+                annoID = annoID + 1
+                tempTA = {
+                    "id": annoID,
+                    "image_id": imgID,
+                    "category_id": objID,
+                    "bbox": bb,
+                    "segmentation": [seg],
+                    "area": area,
+                    "iscrowd": 0
+                }
+
+                dict["annotations"].append(tempTA)
+                '''
+                cv2.rectangle(depI, (x1, y1), (x2, y2), ( 255, 255, 0), 2, 1)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                bottomLeftCornerOfText = (x1, y1)
+                fontScale = 1
+                fontColor = (255, 255, 0)
+                fontthickness = 1
+                lineType = 2
+                gtText = str(objID)
+                cv2.putText(depI, gtText,
                                 bottomLeftCornerOfText,
                                 font,
                                 fontScale,
                                 fontColor,
                                 fontthickness,
                                 lineType)
-                    '''
+                '''
 
-                cv2.imwrite(imgPath, imgI)
+            tempTL = {
+                "url": "cmp.felk.cvut.cz/t-less/",
+                "id": imgID,
+                "name": imgName
+            }
+            dict["licenses"].append(tempTL)
 
-                #cv2.imwrite('/home/sthalham/visTests/normTest.jpg', depI)
-
-                    # print("storing in test: ", imgName)
-
-                tempTL = {
-                    "url": "cmp.felk.cvut.cz/t-less/",
-                    "id": imgID,
-                    "name": imgName
-                }
-                dict["licenses"].append(tempTL)
-
-                tempTV = {
-                    "license": 2,
-                    "url": "cmp.felk.cvut.cz/t-less/",
-                    "file_name": imgName,
-                    "height": rows,
-                    "width": cols,
-                    "date_captured": dateT,
-                    "id": imgID
-                }
-                dict["images"].append(tempTV)
+            tempTV = {
+                "license": 2,
+                "url": "cmp.felk.cvut.cz/t-less/",
+                "file_name": imgName,
+                "height": rows,
+                "width": cols,
+                "date_captured": dateT,
+                "id": imgID
+            }
+            dict["images"].append(tempTV)
 
             elapsed_time = time.time() - start_time
             times.append(elapsed_time)
@@ -378,6 +523,7 @@ if __name__ == "__main__":
             eta = ((all - gloCo) * meantime) / 60
             if gloCo % 100 == 0:
                 print('eta: ', eta, ' min')
+                times = []
 
     catsInt = range(1, 16)
 
@@ -389,17 +535,13 @@ if __name__ == "__main__":
             "supercategory": "object"
         }
         dict["categories"].append(tempC)
-        #dictVal["categories"].append(tempC)
 
-    traAnno = "/home/sthalham/data/T-less_Detectron/linemodBGTrain05062018/annotations/instances_train_tless.json"
-    #valAnno = "/home/sthalham/data/T-less_Detectron/tlessArti24042018_split/annotations/instances_val_tless.json"
+    traAnno = "/home/sthalham/data/T-less_Detectron/linemodHAA/annotations/instances_train_tless.json"
 
     with open(traAnno, 'w') as fpT:
         json.dump(dict, fpT)
 
-    #with open(valAnno, 'w') as fpV:
-    #    json.dump(dictVal, fpV)
-
+    excludedImgs.sort()
     print('excluded images: ')
     for ex in excludedImgs:
         print(ex)

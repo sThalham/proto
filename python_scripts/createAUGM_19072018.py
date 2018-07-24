@@ -29,7 +29,7 @@ fxkin = 579.68  # blender calculated
 fykin = 542.31  # blender calculated
 cxkin = 320
 cykin = 240
-depthCut = 1.8
+depthCut = 1800
 
 np.set_printoptions(threshold=np.nan)
 
@@ -55,7 +55,7 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
 
     if bboxes.shape[0] < 2:
         print('invalid train image, no bboxes in fov')
-        return None, None
+        return None, None, None, None, None
 
     pt = Imath.PixelType(Imath.PixelType.FLOAT)
     golden = OpenEXR.InputFile(fn_depth)
@@ -77,22 +77,20 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     depth = depth * np.cos(np.radians(fov / depth.shape[1] * np.abs(uv_table[:, :, 1]))) * np.cos(
         np.radians(fov / depth.shape[1] * uv_table[:, :, 0]))
 
-    depthTrue = cv2.resize(depth, (resX, resY))
-
     if np.nanmean(depth) < 0.5 or np.nanmean(depth) > 2.0:
         print('invalid train image; range is wrong')
-        return None, None
+        return None, None, None, None, None
 
+    depth = cv2.resize(depth, (resX, resY))
     partmask = cv2.imread(fn_part, 0)
 
-    return depthTrue, partmask
+    return depth, partmask, bboxes, poses, mask_ids
 
 
 def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise):
     depth = cv2.resize(depth, (resX, resY))
-    depthOri = depth
-    # erode and blur mask to get more realistic appearance
 
+    # erode and blur mask to get more realistic appearance
     partmask = cv2.resize(mask_ori, (resX, resY))
     partmask = partmask.astype(np.float32)
     mask = partmask > (np.median(partmask)*0.4)
@@ -108,7 +106,7 @@ def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise)
 
     depth = cv2.resize(depth, None, fx=1/2, fy=1/2)
 
-    res = (((depth / 1000.0) * 1.41421356) ** 2) * 1000.0
+    res = (((depth / 1000.0) * 1.41421356) ** 2)
 
     depthFinal = cv2.GaussianBlur(depth, (blurK, blurK), blurS, blurS)
 
@@ -131,6 +129,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 
     # inpainting
     scaleOri = np.amax(depth_refine)
+
     inPaiMa = np.where(depth_refine == 0.0, 255, 0)
     inPaiMa = inPaiMa.astype(np.uint8)
     inPaiDia = 5.0
@@ -183,7 +182,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     cross = np.abs(cross)
     cross = np.nan_to_num(cross)
 
-    #cross[depth_refine <= 0.3] = 0  # 0 and near range cut
+    cross[depth_refine <= 300] = 0  # 0 and near range cut
     cross[depth_refine > depthCut] = 0  # far range cut
     if not for_vis:
         scaDep = 1.0 / np.nanmax(depth_refine)
@@ -203,8 +202,8 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 ##########################
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/renderings/linemod_nBG/linemod_data/patches18062018'  # path to train samples
-    #root = "/home/sthalham/patches18062018"
+    root = '/home/sthalham/data/renderings/linemod_BG/patches31052018/patches'  # path to train samples
+    target = '/home/sthalham/data/prepro/augmented/'
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -256,65 +255,114 @@ if __name__ == "__main__":
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
 
-            # depth_refine, bboxes, poses, mask_ids = get_a_scene(gtfile, depfile, disfile)
-            depthTrue, mask = manipulate_depth(gtfile, depfile, partfile)
+            depth_refine, mask, bboxes, poses, mask_ids = manipulate_depth(gtfile, depfile, partfile)
 
-            if depthTrue is None:
+            if bboxes is None:
                 excludedImgs.append(int(redname))
                 continue
 
-            rows, cols = depthTrue.shape
+            depth_refine = np.multiply(depth_refine, 1000.0)  # to millimeters
+            rows, cols = depth_refine.shape
 
-            for i in range(1,6):
+            for i in range(1, 6):
 
-                drawN = [1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3]
-                freq = np.bincount(drawN)
-                rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
+                newredname = str(i) + redname[1:]
 
-                fn = '/home/sthalham/git/Keras-GAN/pix2pix/datasets/aug2synth/waste.jpg'
+                fileName = target + "coco_train2014/" + newredname + '.jpg'
+                myFile = Path(fileName)
+                if myFile.exists():
+                    print('File exists, skip encoding and safing.')
 
-                if rnd == 1:
-                    fn = '/home/sthalham/git/Keras-GAN/pix2pix/datasets/aug2synth/train/' + str(trainN) + '.jpg'
-                    trainN += 1
-                elif rnd == 2:
-                    fn = '/home/sthalham/git/Keras-GAN/pix2pix/datasets/aug2synth/val/' + str(valN) + '.jpg'
-                    valN += 1
-                if rnd == 3:
-                    fn = '/home/sthalham/git/Keras-GAN/pix2pix/datasets/aug2synth/test/' + str(testN) + '.jpg'
-                    testN += 1
+                else:
+                    drawKern = [3, 5, 7]
+                    freqKern = np.bincount(drawKern)
+                    kShadow = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+                    kMed = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+                    kBlur = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+                    sBlur = random.uniform(0.25, 3.5)
+                    sDep = random.uniform(0.001, 0.005)
+                    kShadow.astype(int)
+                    kMed.astype(int)
+                    kBlur.astype(int)
+                    kShadow = kShadow[0]
+                    kMed = kMed[0]
+                    kBlur = kBlur[0]
+                    depthAug = augmentDepth(depth_refine, mask, kShadow, kMed, kBlur, sBlur, sDep)
 
-                true_xyz, depth_refine_true = get_normal(depthTrue, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
+                    aug_xyz, depth_refine_aug = get_normal(depthAug, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin,
+                                                           for_vis=False)
+                    cv2.imwrite(fileName, aug_xyz)
 
-                drawKern = [3, 5, 7]
-                freqKern = np.bincount(drawKern)
-                kShadow = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                kMed = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                kBlur = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                sBlur = random.uniform(0.25, 3.5)
-                sDep = random.uniform(0.001, 0.005)
-                kShadow.astype(int)
-                kMed.astype(int)
-                kBlur.astype(int)
-                kShadow = kShadow[0]
-                kMed = kMed[0]
-                kBlur = kBlur[0]
-                depthAug = augmentDepth(depthTrue, mask, kShadow, kMed, kBlur, sBlur, sDep)
+                imgID = int(newredname)
+                imgName = newredname + '.jpg'
 
-                aug_xyz, depth_refine_aug = get_normal(depthAug, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
+                # bb scaling because of image scaling
+                bbsca = 640.0 / 720.0
+                for bbox in bboxes:
+                    objID = np.asscalar(bbox[0]) + 1
+                    bbox = (bbox * bbsca).astype(int)
+                    x1 = np.asscalar(bbox[2])
+                    y1 = np.asscalar(bbox[1])
+                    x2 = np.asscalar(bbox[4])
+                    y2 = np.asscalar(bbox[3])
+                    nx1 = bbox[2]
+                    ny1 = bbox[1]
+                    nx2 = bbox[4]
+                    ny2 = bbox[3]
+                    w = (x2 - x1)
+                    h = (y2 - y1)
+                    bb = [x1, y1, w, h]
+                    area = w * h
+                    npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
+                    seg = npseg.tolist()
 
-                sca = 255.0 / np.amax(true_xyz)
-                scaled = np.multiply(true_xyz, sca)
-                true_xyz = scaled.astype(np.uint8)
+                    annoID = annoID + 1
+                    tempTA = {
+                        "id": annoID,
+                        "image_id": imgID,
+                        "category_id": objID,
+                        "bbox": bb,
+                        "segmentation": [seg],
+                        "area": area,
+                        "iscrowd": 0
+                    }
 
-                sca = 255.0 / np.amax(aug_xyz)
-                scaled = np.multiply(aug_xyz, sca)
-                aug_xyz = scaled.astype(np.uint8)
+                    dict["annotations"].append(tempTA)
+                    '''
+                    cv2.rectangle(depI, (x1, y1), (x2, y2), ( 255, 255, 0), 2, 1)
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    bottomLeftCornerOfText = (x1, y1)
+                    fontScale = 1
+                    fontColor = (255, 255, 0)
+                    fontthickness = 1
+                    lineType = 2
+                    gtText = str(objID)
+                    cv2.putText(depI, gtText,
+                                    bottomLeftCornerOfText,
+                                    font,
+                                    fontScale,
+                                    fontColor,
+                                    fontthickness,
+                                    lineType)
+                    '''
 
-                image = np.concatenate((true_xyz, aug_xyz), axis=1)
+                tempTL = {
+                    "url": "cmp.felk.cvut.cz/t-less/",
+                    "id": imgID,
+                    "name": imgName
+                }
+                dict["licenses"].append(tempTL)
 
-                cv2.imwrite(fn, image)
-
-                print('stop')
+                tempTV = {
+                    "license": 2,
+                    "url": "cmp.felk.cvut.cz/t-less/",
+                    "file_name": imgName,
+                    "height": rows,
+                    "width": cols,
+                    "date_captured": dateT,
+                    "id": imgID
+                }
+                dict["images"].append(tempTV)
 
             gloCo += 1
 
@@ -326,4 +374,24 @@ if __name__ == "__main__":
                 print('eta: ', eta, ' min')
                 times = []
 
+    catsInt = range(1, 16)
+
+    for s in catsInt:
+        objName = str(s)
+        tempC = {
+            "id": s,
+            "name": objName,
+            "supercategory": "object"
+        }
+        dict["categories"].append(tempC)
+
+    traAnno = target + "annotations/instances_train2014.json"
+
+    with open(traAnno, 'w') as fpT:
+        json.dump(dict, fpT)
+
+    excludedImgs.sort()
+    print('excluded images: ')
+    for ex in excludedImgs:
+        print(ex)
     print('Chill for once in your life... everything\'s done')

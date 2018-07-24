@@ -225,6 +225,8 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
         print('invalid train image; range is wrong')
         return None, None, None, None
 
+    depthFinal = cv2.resize(depth, (resX, resY))
+
     return depth, bboxes, poses, mask_ids
 
 
@@ -312,7 +314,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 if __name__ == "__main__":
 
     root = '/home/sthalham/data/renderings/linemod_BG/patches31052018/patches'  # path to train samples
-    #root = "/home/sthalham/patches18062018"
+    target = '/home/sthalham/data/prepro/synthetic/'
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -372,18 +374,16 @@ if __name__ == "__main__":
 
             newredname = redname
 
-            fileName = '/home/sthalham/data/prepro/synthetic3CH/coco_train2014/' + newredname + '.jpg'
-            oCName = '/home/sthalham/data/prepro/synthetic1CH/coco_train2014/' + newredname + '.jpg'
-            #fileName = "/home/sthalham/visTests/test.jpg"
+            fileName = target +'coco_train2014/' + newredname + '.jpg'
+
             myFile = Path(fileName)
             if myFile.exists():
                 print('File exists, skip encoding and safing.')
 
             else:
                 imgI, depth_refine = get_normal(depth_refine, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
-                #imgI = encodeImage(depth_refine)
                 cv2.imwrite(fileName, imgI)
-                cv2.imwrite(oCName, depth_refine)
+
 
             imgID = int(newredname)
             imgName = newredname + '.jpg'
@@ -475,7 +475,7 @@ if __name__ == "__main__":
         }
         dict["categories"].append(tempC)
 
-    traAnno = "/home/sthalham/data/prepro/synthetic3CH/annotations/instances_train2014.json"
+    traAnno = target + "annotations/instances_train2014.json"
 
     with open(traAnno, 'w') as fpT:
         json.dump(dict, fpT)

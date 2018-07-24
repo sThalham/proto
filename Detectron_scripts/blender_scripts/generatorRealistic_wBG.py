@@ -112,10 +112,10 @@ def getVisibleBoundingBox(objectPassIndex):
 
 base_dir = "/home/sthalham/data/LINEMOD/models_stl"
 back_dir = "/home/sthalham/data/CAD_stl/rnd"
-total_set = 500 #10000 set of scenes, each set has identical objects with varied poses to anchor pose (+-15)
+total_set = 50000 #10000 set of scenes, each set has identical objects with varied poses to anchor pose (+-15)
 pair_set = 1 #number of pair scene for each set, 10
-sample_dir = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD31052018' #directory for temporary files (cam_L, cam_R, masks..~)
-target_dir = '/home/sthalham/data/t-less_mani/artificialScenes/renderedLINEMOD31052018/patches'
+sample_dir = '/home/sthalham/data/renderings/linemod_BG/renderedLINEMOD24072018' #directory for temporary files (cam_L, cam_R, masks..~)
+target_dir = '/home/sthalham/data/renderings/linemod_BG/renderedLINEMOD24072018/patches'
 index=0
 isfile=True
 while isfile:
@@ -151,7 +151,7 @@ for root, dirs, files in os.walk(base_dir):
              #print(len(model_file),temp_fn)
 
 # FOR BACKGROUND OBJECTS 
-'''         
+         
 back_file=[]
 back_solo=[]
 for rootb, dirsb, filesb in os.walk(back_dir):
@@ -161,7 +161,7 @@ for rootb, dirsb, filesb in os.walk(back_dir):
              back_file.append(temp_fn)
              back_solo.append(file)
              #print(len(model_file),temp_fn)
-'''
+
 # FOR BACKGROUND OBJECTS  
 
 for num_set in np.arange(total_set):
@@ -200,7 +200,7 @@ for num_set in np.arange(total_set):
     mat = obj_object.active_material
 
     # FOR BACKGROUND OBJECTS
-    '''
+    
     drawBack = list(range(8,12))
     freqBack= np.bincount(drawBack)
     BackDraw = np.random.choice(np.arange(len(freqBack)), 1, p=freqBack / len(drawBack), replace=False)
@@ -208,7 +208,7 @@ for num_set in np.arange(total_set):
     BackfreqObj = np.bincount(BackObj)
     BackObjDraw = np.random.choice(np.arange(len(BackfreqObj)), BackDraw, p=BackfreqObj / len(BackObj), replace=True) 
     Back_object = np.asscalar(BackDraw)
-    '''
+    
     
     #real deal here
     drawAmo = list(range(5,8))
@@ -242,7 +242,7 @@ for num_set in np.arange(total_set):
         anchor_pose[i,5] =radians(random()*360.0)
         
     # Background objects
-    '''
+    
     for i in np.arange(Back_object):
         file_idx = randint(0,len(back_file)-1)
         file_model = back_file[file_idx]
@@ -269,7 +269,7 @@ for num_set in np.arange(total_set):
         anchor_pose[i+num_object-1,4] =radians(random()*360.0)
         anchor_pose[i+num_object-1,5] =radians(random()*360.0)
     # FOR BACKGROUND OBJECTS 
-    '''
+    
   
 	#Set object physics
     scene = bpy.context.scene
@@ -332,8 +332,7 @@ for num_set in np.arange(total_set):
 
             if obj.type == 'CAMERA' and  obj.name=='cam_L':
                 obj_object = bpy.data.objects[obj.name]
-                obj_object.location.z = random()*0.7+0.65  #1.0-2.5
-                print('obj_Loc: ', obj_object.location.z)
+                obj_object.location.z = random()*0.9+0.45  #1.0-2.5
 
 	#Run physics
 
@@ -403,9 +402,6 @@ for num_set in np.arange(total_set):
         minmax_vu = np.zeros((num_object+5,4),dtype=np.int) #min v, min u, max v, max u
         label_vu = np.zeros((mask.shape[0],mask.shape[1]),dtype=np.int8) #min v, min u, max v, max u
         colors = np.zeros((num_object+5,3),dtype=mask.dtype)
-        print(minmax_vu.shape)
-        print(colors.shape)
-        print(label_vu.shape)
 
         n_label=0
 
@@ -457,9 +453,6 @@ for num_set in np.arange(total_set):
                             label_vu[v,u]=ob_index+1
                             continue
                     if has_color ==False: #new label
-                        print('v: ', v)
-                        print('u: ', u)
-                        print('mask: ', mask[v,u])
                         colors[n_label] = mask[v,u]
                         label_vu[v,u]=n_label+1 #identical to object_index in blender
                         minmax_vu[n_label,0] = v
@@ -554,12 +547,5 @@ for num_set in np.arange(total_set):
                 pose_list=pose.reshape(-1)
                 id = int(object_label[int(object_no[i]-2)])
                 mask_id = int(refined[i]+1)
-                #print('bbox: ', bbox_refined[i])
-          
-                #Bo, Co = getVisibleBoundingBox(obj_object.pass_index)
-                #boxesT.append(Bo)
-                #masksT.append(Co)
-
-                # gt={int(i):{'bbox':boxesT[i].tolist(),'class_id':id,'mask_id':mask_id,'pose':pose_list.tolist()}} 
                 gt={int(i):{'bbox':bbox_refined[i].tolist(),'class_id':id,'mask_id':mask_id,'pose':pose_list.tolist()}} #,'camera_z':camera_z,'camera_rot':camera_rot.tolist()
                 yaml.dump(gt,f)
