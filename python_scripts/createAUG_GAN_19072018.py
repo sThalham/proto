@@ -13,6 +13,11 @@ import transforms3d as tf3d
 import time
 import itertools
 import random
+from noise import pnoise2, snoise2
+import copy
+import pyfastnoisesimd as fns
+import gc
+
 #import pcl
 #from pcl import pcl_visualization
 
@@ -88,17 +93,15 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     return depthTrue, partmask
 
 
-def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise):
-    depth = cv2.resize(depth, (resX, resY))
-    depthOri = depth
-    # erode and blur mask to get more realistic appearance
+def augmentDepth(depth, obj_mask, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise):
 
+    # erode and blur mask to get more realistic appearance
     partmask = cv2.resize(mask_ori, (resX, resY))
     partmask = partmask.astype(np.float32)
-    mask = partmask > (np.median(partmask)*0.4)
+    mask = partmask > (np.median(partmask) * 0.4)
     partmask = np.where(mask, 255.0, 0.0)
 
-    #apply shadow
+    # apply shadow
     kernel = np.ones((shadowClK, shadowClK))
     partmask = cv2.morphologyEx(partmask, cv2.MORPH_OPEN, kernel)
     partmask = signal.medfilt2d(partmask, kernel_size=shadowMK)
@@ -106,9 +109,77 @@ def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise)
     mask = partmask > 20
     depth = np.where(mask, depth, 0.0)
 
+    # augment foreground
+    obj_mask = obj_mask.astype(np.uint8)
+    objmask = cv2.resize(obj_mask, dsize=(resX, resY), interpolation=cv2.INTER_LINEAR)
+    fg = np.where(objmask > 0, depth, 0.0)
+
+    shape = [resY, resX]
+
+    # fast perlin noise
+    seed = np.random.randint(2 ** 31)
+    N_threads = 4
+    perlin = fns.Noise(seed=seed, numWorkers=N_threads)
+    perlin.frequency = 0.02
+    perlin.noiseType = fns.NoiseType.SimplexFractal
+    perlin.fractal.fractalType = fns.FractalType.FBM
+    perlin.fractal.octaves = 8
+    perlin.fractal.lacunarity = 2.1
+    perlin.fractal.gain = 0.45
+    perlin.perturb.perturbType = fns.PerturbType.NoPerturb
+
+    # noise according to keep it unreal
+    noiseX = np.random.uniform(0.0001, 0.1, resX * resY)
+    noiseY = np.random.uniform(0.001, 0.1, resX * resY)
+    noiseZ = np.random.uniform(0.01, 0.1, resX * resY)
+    Wxy = np.random.randint(0, 10)
+    Wz = np.random.uniform(0, 0.005)
+
+    X, Y = np.meshgrid(np.arange(resX), np.arange(resY))
+    coords0 = fns.emptyCoords(resX*resY)
+    coords1 = fns.emptyCoords(resX * resY)
+    coords2 = fns.emptyCoords(resX * resY)
+
+    coords0[0, :] = noiseX.ravel()
+    coords0[1, :] = Y.ravel()
+    coords0[2, :] = X.ravel()
+    VecF0 = perlin.genFromCoords(coords0)
+    VecF0 = VecF0.reshape((resY, resX))
+
+    coords1[0, :] = noiseY.ravel()
+    coords1[1, :] = Y.ravel()
+    coords1[2, :] = X.ravel()
+    VecF1 = perlin.genFromCoords(coords1)
+    VecF1 = VecF1.reshape((resY, resX))
+
+    coords2[0, :] = noiseZ.ravel()
+    coords2[1, :] = Y.ravel()
+    coords2[2, :] = X.ravel()
+    VecF2 = perlin.genFromCoords(coords2)
+    VecF2 = VecF2.reshape((resY, resX))
+
+    x = np.arange(resX, dtype=np.uint16)
+    x = x[np.newaxis, :].repeat(resY, axis=0)
+    y = np.arange(resY, dtype=np.uint16)
+    y = y[:, np.newaxis].repeat(resX, axis=1)
+
+    fx = x + Wxy * VecF0
+    fy = y + Wxy * VecF1
+    fx = np.where(fx < 0, 0, fx)
+    fx = np.where(fx >= resX, resX-1, fx)
+    fy = np.where(fy < 0, 0, fy)
+    fy = np.where(fy >= resY, resY-1, fy)
+    fx = fx.astype(dtype=np.uint16)
+    fy = fy.astype(dtype=np.uint16)
+    depDis = depth[fy, fx] + Wz * VecF2
+
+    del perlin
+    depthFinal = copy.deepcopy(depDis)
+
+    '''
     depth = cv2.resize(depth, None, fx=1/2, fy=1/2)
 
-    res = (((depth / 1000.0) * 1.41421356) ** 2) * 1000.0
+    res = (((depth / 1000.0) * 1.41421356) ** 2)
 
     depthFinal = cv2.GaussianBlur(depth, (blurK, blurK), blurS, blurS)
 
@@ -120,7 +191,16 @@ def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise)
     noise = np.multiply(dNonVar, depthNoise)
     depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
 
-    depthFinal = cv2.resize(depthFinal, (resX, resY))
+    frequency = freq * octaves
+    perlX = 320
+    perlY = 240
+    depthPerlin = depthFinal
+    for y in range(perlY):
+        for x in range(perlX):
+            depthPerlin[y, x] = snoise2(x / frequency, y / frequency, octaves)  * ext * depthPerlin[y, x] + depthPerlin[y, x]
+
+    depthFinal = cv2.resize(depthPerlin, (resX, resY))
+    '''
 
     return depthFinal
 
@@ -183,8 +263,8 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
     cross = np.abs(cross)
     cross = np.nan_to_num(cross)
 
-    cross[depth_refine <= 300] = 0  # 0 and near range cut
-    cross[depth_refine > depthCut] = 0  # far range cut
+    #cross[depth_refine <= 300] = 0  # 0 and near range cut
+    #cross[depth_refine > depthCut] = 0  # far range cut
     if not for_vis:
         scaDep = 1.0 / np.nanmax(depth_refine)
         depth_refine = np.multiply(depth_refine, scaDep)
@@ -203,7 +283,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 ##########################
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/renderings/linemod_nBG/linemod_data/patches18062018'  # path to train samples
+    root = '/home/sthalham/data/renderings/linemod_BG/patches31052018/patches'  # path to train samples
     #root = "/home/sthalham/patches18062018"
 
     now = datetime.datetime.now()
@@ -230,9 +310,9 @@ if __name__ == "__main__":
     all = 10000
     times = []
 
-    trainN = 1
+    trainN = len(os.listdir('/home/sthalham/data/prepro/p2p_fastSimplex/train'))
     testN = 1
-    valN = 1
+    valN = len(os.listdir('/home/sthalham/data/prepro/p2p_fastSimplex/val'))
 
     depPath = root + "/depth/"
     partPath = root + "/part/"
@@ -241,7 +321,7 @@ if __name__ == "__main__":
     excludedImgs = []
 
     for fileInd in os.listdir(root):
-        if fileInd.endswith(".yaml"):
+        if fileInd.endswith(".yaml") and len(os.listdir('/home/sthalham/data/prepro/p2p_fastSimplex/train')) < 10001:
 
             print('Processing next image')
 
@@ -249,68 +329,73 @@ if __name__ == "__main__":
             gloCo = gloCo + 1
 
             redname = fileInd[:-8]
-            if int(redname) > 10130:
-                continue
+            #if int(trainN) > 10130:
+            #    continue
 
             gtfile = gtPath + '/' + fileInd
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
+            maskfile = maskPath + redname + "_mask.npy"
 
             # depth_refine, bboxes, poses, mask_ids = get_a_scene(gtfile, depfile, disfile)
             depthTrue, mask = manipulate_depth(gtfile, depfile, partfile)
-
-            depthTrue = np.multiply(depthTrue, 1000.0)
+            obj_mask = np.load(maskfile)
+            obj_mask = obj_mask.astype(np.int8)
+            obj_mask = np.where(obj_mask > 0, 255, 0)
 
             if depthTrue is None:
                 excludedImgs.append(int(redname))
                 continue
 
+            depthTrue = np.multiply(depthTrue, 1000.0)
+
             rows, cols = depthTrue.shape
 
-            for i in range(1,6):
+            #for i in range(1,6):
 
-                drawN = [1, 1, 1, 1, 1, 1, 1, 1, 2, 2]
-                freq = np.bincount(drawN)
-                rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
+            drawN = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+            freq = np.bincount(drawN)
+            rnd = np.random.choice(np.arange(len(freq)), 1, p=freq / len(drawN), replace=False)
 
-                fn = '/home/sthalham/data/GAN_data/linemodRendered/waste.jpg'
+            fn = '/home/sthalham/data/prepro/p2p_train_10k/waste.jpg'
 
-                if rnd == 1:
-                    fn = '/home/sthalham/data/GAN_data/linemodRendered/train/' + str(trainN) + '.jpg'
-                    trainN += 1
-                elif rnd == 2:
-                    fn = '/home/sthalham/data/GAN_data/linemodRendered/val/' + str(valN) + '.jpg'
-                    valN += 1
+            if rnd == 1:
+                fn = '/home/sthalham/data/prepro/p2p_fastSimplex/train/' + str(trainN) + '.jpg'
+                trainN += 1
+            elif rnd == 2:
+                fn = '/home/sthalham/data/prepro/p2p_fastSimplex/val/' + str(valN) + '.jpg'
+                valN += 1
 
-                true_xyz, depth_refine_true = get_normal(depthTrue, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
+            true_xyz, depth_refine_true = get_normal(depthTrue, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
 
-                drawKern = [3, 5, 7]
-                freqKern = np.bincount(drawKern)
-                kShadow = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                kMed = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                kBlur = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                sBlur = random.uniform(0.25, 3.5)
-                sDep = random.uniform(0.001, 0.005)
-                kShadow.astype(int)
-                kMed.astype(int)
-                kBlur.astype(int)
-                kShadow = kShadow[0]
-                kMed = kMed[0]
-                kBlur = kBlur[0]
-                depthAug = augmentDepth(depthTrue, mask, kShadow, kMed, kBlur, sBlur, sDep)
+            drawKern = [3, 5, 7]
+            freqKern = np.bincount(drawKern)
+            kShadow = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+            kMed = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+            kBlur = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+            sBlur = random.uniform(0.25, 3.5)
+            sDep = random.uniform(0.001, 0.005)
+            kShadow.astype(int)
+            kMed.astype(int)
+            kBlur.astype(int)
+            kShadow = kShadow[0]
+            kMed = kMed[0]
+            kBlur = kBlur[0]
+            ext = random.uniform(0.005, 0.05)
+            depthAug = augmentDepth(depthTrue, obj_mask, mask, kShadow, kMed, kBlur, sBlur, sDep)
+            gc.collect(2)
 
-                aug_xyz, depth_refine_aug = get_normal(depthAug, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
+            sca = 255.0 / np.nanmax(depthAug)
+            cross = np.multiply(depthAug, sca)
+            dA = cross.astype(np.uint8)
 
-                image = np.concatenate((true_xyz, aug_xyz), axis=1)
+            sca = 255.0 / np.nanmax(depthTrue)
+            cross = np.multiply(depthTrue, sca)
+            dT = cross.astype(np.uint8)
 
-                layTop = image[0, :, :].repeat(80, axis=0)
-                layBot = image[479, :, :].repeat(80, axis=0)
-                image = np.concatenate((layTop, image), axis=0)
-                image = np.concatenate((image, layBot), axis=0)
+            image = np.concatenate((dT, dA), axis=1)
 
-                cv2.imwrite(fn, image)
-
-                print('stop')
+            cv2.imwrite(fn, image)
 
             gloCo += 1
 

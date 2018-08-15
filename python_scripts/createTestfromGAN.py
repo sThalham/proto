@@ -278,8 +278,8 @@ def create_BB(rgb):
 if __name__ == "__main__":
 
     root = "/home/sthalham/data/LINEMOD/test/"  # path to train samples, depth + rgb
-    # safe = sys.argv[2] + "/"
-    # print(root)
+    targetP = '/home/sthalham/data/prepro/lm_testGAN' # path to safe images to
+    GANsource = '/home/sthalham/data/tmp'
 
     sub = os.listdir(root)
 
@@ -331,6 +331,7 @@ if __name__ == "__main__":
             imgname = ss
             rgbImgPath = rgbPath + ss
             depImgPath = depPath + ss
+
             #print(rgbImgPath)
 
             if ss.startswith('000'):
@@ -358,8 +359,20 @@ if __name__ == "__main__":
             # read images and create mask
             rgbImg = cv2.imread(rgbImgPath)
             depImg = cv2.imread(depImgPath, cv2.IMREAD_UNCHANGED)
-            #depImg = cv2.resize(depImg, None, fx=1 / 2, fy=1 / 2)
-            rows, cols = depImg.shape
+
+            # inpainting
+            scaleOri = np.amax(depImg)
+            inPaiMa = np.where(depImg == 0.0, 255, 0)
+            inPaiMa = inPaiMa.astype(np.uint8)
+            inPaiDia = 5.0
+            depth_refine = depImg.astype(np.float32)
+            depPaint = cv2.inpaint(depth_refine, inPaiMa, inPaiDia, cv2.INPAINT_NS)
+
+            depNorm = depPaint - np.amin(depPaint)
+            rangeD = np.amax(depNorm)
+            depNorm = np.divide(depNorm, rangeD)
+            depth_refine = np.multiply(depNorm, scaleOri)
+
 
             # create image number and name
             template = '00000'
@@ -373,28 +386,32 @@ if __name__ == "__main__":
             imgNam = tempSS + imgNum + '.jpg'
             iname = str(imgNam)
 
-            fileName = '/home/sthalham/data/tests_PrePro/coco/coco_val2014/' + imgNam
+            Gss = ss[:-4]
+            #GANImgPath = GANsource + '/0' + Gss + '.jpg'
+            GANImgPath = GANsource + '/' + iname
+            print(GANImgPath)
+            myTar = Path(GANImgPath)
+            if not myTar.exists():
+                continue
+            GANimg = cv2.imread(GANImgPath, cv2.IMREAD_ANYCOLOR)
+            rows, cols = depImg.shape
+
+            fileName = targetP + '/coco_val2014/' + imgNam
             myFile = Path(fileName)
             if myFile.exists():
                 print('File exists, skip encoding')
             else:
                 #imgI = encodeImage(depImg)
-                imgI, depth_refine = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
-                cv2.imwrite(fileName, imgI)
+                #imgI, depth_refine = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
+                maskClose = depth_refine <= 400
+                maskClose = np.repeat(maskClose[:, :, np.newaxis], 3, axis=2)
+                maskFar = depth_refine > depthCut
+                maskFar = np.repeat(maskFar[:, :, np.newaxis], 3, axis=2)
+                GANimg = np.where(maskClose, 0.0, GANimg)  # 0 and near range cut
+                GANimg = np.where(maskFar, 0.0, GANimg)
+                GANimg = GANimg.astype(np.uint8)
+                cv2.imwrite(fileName, GANimg)
 
-
-            #cv2.imwrite('/home/sthalham/visTests/disp.jpg', imgI[:,:,0])
-            #cv2.imwrite('/home/sthalham/visTests/area.jpg', imgI[:, :, 1])
-            #cv2.imwrite('/home/sthalham/visTests/grav.jpg', imgI[:, :, 2])
-            #cv2.imwrite('/home/sthalham/visTests/HAA.jpg', imgI)
-
-            # THIS for Training
-            # cnt, bb, area, mask = create_BB(rgbImg)
-
-            # THAT for Testing
-            # print(s)
-            # print(ss)
-            # print(gtYML[int(ss)])
             gtImg = gtYML[int(ss)]
 
             #drawN = [1, 1, 1, 1, 2]
@@ -483,16 +500,6 @@ if __name__ == "__main__":
                     }
                     dict["annotations"].append(tempVa)
 
-                # cnt = cnt.ravel()
-                # cont = cnt.tolist()
-
-                # depthName = '/home/sthalham/data/T-less_Detectron/linemodTest_HAA/train/' + imgNam
-                # rgbName = '/home/sthalham/data/T-less_Detectron/tlessC_all/val/' + imgNam
-                #cv2.imwrite(depthName, imgI)
-                # cv2.imwrite(rgbName, rgbImg)
-
-                #print("storing in test: ", imgNam)
-
                 # create dictionaries for json
                 tempVl = {
                     "url": "cmp.felk.cvut.cz/t-less/",
@@ -532,7 +539,7 @@ if __name__ == "__main__":
         dict["categories"].append(tempC)
         dictVal["categories"].append(tempC)
 
-    valAnno = "/home/sthalham/data/tests_PrePro/coco/annotations/instances_val2014.json"
+    valAnno = targetP + "/annotations/instances_val2014.json"
     #trainAnno = "/home/sthalham/data/T-less_Detectron/linemodTest_HHA/annotations/instances_train_tless.json"
 
     with open(valAnno, 'w') as fpV:

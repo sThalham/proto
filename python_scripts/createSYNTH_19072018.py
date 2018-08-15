@@ -314,7 +314,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 if __name__ == "__main__":
 
     root = '/home/sthalham/data/renderings/linemod_BG/patches31052018/patches'  # path to train samples
-    target = '/home/sthalham/data/prepro/synthetic/'
+    target = '/home/sthalham/data/prepro/lm_synth_blur/'
 
     now = datetime.datetime.now()
     dateT = str(now)

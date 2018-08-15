@@ -13,8 +13,8 @@ import transforms3d as tf3d
 import time
 import itertools
 import random
-#import pcl
-#from pcl import pcl_visualization
+from noise import pnoise2, snoise2
+import pyfastnoisesimd as fns
 
 import OpenEXR, Imath
 from pathlib import Path
@@ -87,16 +87,14 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     return depth, partmask, bboxes, poses, mask_ids
 
 
-def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise):
-    depth = cv2.resize(depth, (resX, resY))
-
+def augmentDepth(depth, obj_mask, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise):
     # erode and blur mask to get more realistic appearance
     partmask = cv2.resize(mask_ori, (resX, resY))
     partmask = partmask.astype(np.float32)
-    mask = partmask > (np.median(partmask)*0.4)
+    mask = partmask > (np.median(partmask) * 0.4)
     partmask = np.where(mask, 255.0, 0.0)
 
-    #apply shadow
+    # apply shadow
     kernel = np.ones((shadowClK, shadowClK))
     partmask = cv2.morphologyEx(partmask, cv2.MORPH_OPEN, kernel)
     partmask = signal.medfilt2d(partmask, kernel_size=shadowMK)
@@ -104,7 +102,76 @@ def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise)
     mask = partmask > 20
     depth = np.where(mask, depth, 0.0)
 
-    depth = cv2.resize(depth, None, fx=1/2, fy=1/2)
+    # augment foreground
+    obj_mask = obj_mask.astype(np.uint8)
+    objmask = cv2.resize(obj_mask, dsize=(resX, resY), interpolation=cv2.INTER_LINEAR)
+    fg = np.where(objmask > 0, depth, 0.0)
+
+    shape = [resY, resX]
+
+    # fast perlin noise
+    seed = np.random.randint(2 ** 31)
+    N_threads = 4
+    perlin = fns.Noise(seed=seed, numWorkers=N_threads)
+    perlin.frequency = 0.02
+    perlin.noiseType = fns.NoiseType.SimplexFractal
+    perlin.fractal.fractalType = fns.FractalType.FBM
+    perlin.fractal.octaves = 8
+    perlin.fractal.lacunarity = 2.1
+    perlin.fractal.gain = 0.45
+    perlin.perturb.perturbType = fns.PerturbType.NoPerturb
+
+    # noise according to keep it unreal
+    noiseX = np.random.uniform(0.0001, 0.1, resX * resY)
+    noiseY = np.random.uniform(0.001, 0.1, resX * resY)
+    noiseZ = np.random.uniform(0.01, 0.1, resX * resY)
+    Wxy = np.random.randint(0, 10)
+    Wz = np.random.uniform(0, 0.005)
+
+    X, Y = np.meshgrid(np.arange(resX), np.arange(resY))
+    coords0 = fns.emptyCoords(resX * resY)
+    coords1 = fns.emptyCoords(resX * resY)
+    coords2 = fns.emptyCoords(resX * resY)
+
+    coords0[0, :] = noiseX.ravel()
+    coords0[1, :] = Y.ravel()
+    coords0[2, :] = X.ravel()
+    VecF0 = perlin.genFromCoords(coords0)
+    VecF0 = VecF0.reshape((resY, resX))
+
+    coords1[0, :] = noiseY.ravel()
+    coords1[1, :] = Y.ravel()
+    coords1[2, :] = X.ravel()
+    VecF1 = perlin.genFromCoords(coords1)
+    VecF1 = VecF1.reshape((resY, resX))
+
+    coords2[0, :] = noiseZ.ravel()
+    coords2[1, :] = Y.ravel()
+    coords2[2, :] = X.ravel()
+    VecF2 = perlin.genFromCoords(coords2)
+    VecF2 = VecF2.reshape((resY, resX))
+
+    x = np.arange(resX, dtype=np.uint16)
+    x = x[np.newaxis, :].repeat(resY, axis=0)
+    y = np.arange(resY, dtype=np.uint16)
+    y = y[:, np.newaxis].repeat(resX, axis=1)
+
+    fx = x + Wxy * VecF0
+    fy = y + Wxy * VecF1
+    fx = np.where(fx < 0, 0, fx)
+    fx = np.where(fx >= resX, resX - 1, fx)
+    fy = np.where(fy < 0, 0, fy)
+    fy = np.where(fy >= resY, resY - 1, fy)
+    fx = fx.astype(dtype=np.uint16)
+    fy = fy.astype(dtype=np.uint16)
+    depDis = depth[fy, fx] + Wz * VecF2
+
+    del perlin
+    depth = np.where(depDis > 0, depDis, 0.0)
+    print(np.amax(depth))
+    print(np.amin(depth))
+
+    depth = cv2.resize(depth, None, fx=1 / 2, fy=1 / 2)
 
     res = (((depth / 1000.0) * 1.41421356) ** 2)
 
@@ -116,6 +183,9 @@ def augmentDepth(depth, mask_ori, shadowClK, shadowMK, blurK, blurS, depthNoise)
     dNonVar = np.multiply(dNonVar, res)
 
     noise = np.multiply(dNonVar, depthNoise)
+    print(dNonVar.shape)
+    print(noise.shape)
+
     depthFinal = np.random.normal(loc=dNonVar, scale=noise, size=dNonVar.shape)
 
     depthFinal = cv2.resize(depthFinal, (resX, resY))
@@ -203,7 +273,7 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 if __name__ == "__main__":
 
     root = '/home/sthalham/data/renderings/linemod_BG/patches31052018/patches'  # path to train samples
-    target = '/home/sthalham/data/prepro/augmented/'
+    target = '/home/sthalham/data/prepro/augm_fastSimplex_std/'
 
     now = datetime.datetime.now()
     dateT = str(now)
@@ -254,8 +324,12 @@ if __name__ == "__main__":
             gtfile = gtPath + '/' + fileInd
             depfile = depPath + redname + "_depth.exr"
             partfile = partPath + redname + "_part.png"
+            maskfile = maskPath + redname + "_mask.npy"
 
             depth_refine, mask, bboxes, poses, mask_ids = manipulate_depth(gtfile, depfile, partfile)
+            obj_mask = np.load(maskfile)
+            obj_mask = obj_mask.astype(np.int8)
+            obj_mask = np.where(obj_mask > 0, 255, 0)
 
             if bboxes is None:
                 excludedImgs.append(int(redname))
@@ -264,71 +338,69 @@ if __name__ == "__main__":
             depth_refine = np.multiply(depth_refine, 1000.0)  # to millimeters
             rows, cols = depth_refine.shape
 
-            for i in range(1, 6):
+            newredname = redname[1:]
 
-                newredname = str(i) + redname[1:]
+            fileName = target + "coco_train2014/" + newredname + '.jpg'
+            myFile = Path(fileName)
+            if myFile.exists():
+                print('File exists, skip encoding and safing.')
 
-                fileName = target + "coco_train2014/" + newredname + '.jpg'
-                myFile = Path(fileName)
-                if myFile.exists():
-                    print('File exists, skip encoding and safing.')
+            else:
+                drawKern = [3, 5, 7]
+                freqKern = np.bincount(drawKern)
+                kShadow = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+                kMed = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+                kBlur = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
+                sBlur = random.uniform(0.25, 3.5)
+                sDep = random.uniform(0.001, 0.005)
+                kShadow.astype(int)
+                kMed.astype(int)
+                kBlur.astype(int)
+                kShadow = kShadow[0]
+                kMed = kMed[0]
+                kBlur = kBlur[0]
+                depthAug = augmentDepth(depth_refine, obj_mask, mask, kShadow, kMed, kBlur, sBlur, sDep)
 
-                else:
-                    drawKern = [3, 5, 7]
-                    freqKern = np.bincount(drawKern)
-                    kShadow = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                    kMed = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                    kBlur = np.random.choice(np.arange(len(freqKern)), 1, p=freqKern / len(drawKern), replace=False)
-                    sBlur = random.uniform(0.25, 3.5)
-                    sDep = random.uniform(0.001, 0.005)
-                    kShadow.astype(int)
-                    kMed.astype(int)
-                    kBlur.astype(int)
-                    kShadow = kShadow[0]
-                    kMed = kMed[0]
-                    kBlur = kBlur[0]
-                    depthAug = augmentDepth(depth_refine, mask, kShadow, kMed, kBlur, sBlur, sDep)
+                aug_xyz, depth_refine_aug = get_normal(depthAug, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin,
+                                                         for_vis=False)
+                cv2.imwrite(fileName, aug_xyz)
 
-                    aug_xyz, depth_refine_aug = get_normal(depthAug, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin,
-                                                           for_vis=False)
-                    cv2.imwrite(fileName, aug_xyz)
+            imgID = int(newredname)
+            imgName = newredname + '.jpg'
 
-                imgID = int(newredname)
-                imgName = newredname + '.jpg'
+            # bb scaling because of image scaling
+            bbsca = 640.0 / 720.0
+            for bbox in bboxes:
+                objID = np.asscalar(bbox[0]) + 1
+                bbox = (bbox * bbsca).astype(int)
+                x1 = np.asscalar(bbox[2])
+                y1 = np.asscalar(bbox[1])
+                x2 = np.asscalar(bbox[4])
+                y2 = np.asscalar(bbox[3])
+                nx1 = bbox[2]
+                ny1 = bbox[1]
+                nx2 = bbox[4]
+                ny2 = bbox[3]
+                w = (x2 - x1)
+                h = (y2 - y1)
+                bb = [x1, y1, w, h]
+                area = w * h
+                npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
+                seg = npseg.tolist()
 
-                # bb scaling because of image scaling
-                bbsca = 640.0 / 720.0
-                for bbox in bboxes:
-                    objID = np.asscalar(bbox[0]) + 1
-                    bbox = (bbox * bbsca).astype(int)
-                    x1 = np.asscalar(bbox[2])
-                    y1 = np.asscalar(bbox[1])
-                    x2 = np.asscalar(bbox[4])
-                    y2 = np.asscalar(bbox[3])
-                    nx1 = bbox[2]
-                    ny1 = bbox[1]
-                    nx2 = bbox[4]
-                    ny2 = bbox[3]
-                    w = (x2 - x1)
-                    h = (y2 - y1)
-                    bb = [x1, y1, w, h]
-                    area = w * h
-                    npseg = np.array([nx1, ny1, nx2, ny1, nx2, ny2, nx1, ny2])
-                    seg = npseg.tolist()
+                annoID = annoID + 1
+                tempTA = {
+                    "id": annoID,
+                    "image_id": imgID,
+                    "category_id": objID,
+                    "bbox": bb,
+                    "segmentation": [seg],
+                    "area": area,
+                    "iscrowd": 0
+                }
 
-                    annoID = annoID + 1
-                    tempTA = {
-                        "id": annoID,
-                        "image_id": imgID,
-                        "category_id": objID,
-                        "bbox": bb,
-                        "segmentation": [seg],
-                        "area": area,
-                        "iscrowd": 0
-                    }
-
-                    dict["annotations"].append(tempTA)
-                    '''
+                dict["annotations"].append(tempTA)
+                '''
                     cv2.rectangle(depI, (x1, y1), (x2, y2), ( 255, 255, 0), 2, 1)
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     bottomLeftCornerOfText = (x1, y1)
@@ -344,25 +416,25 @@ if __name__ == "__main__":
                                     fontColor,
                                     fontthickness,
                                     lineType)
-                    '''
+                '''
 
-                tempTL = {
-                    "url": "cmp.felk.cvut.cz/t-less/",
-                    "id": imgID,
-                    "name": imgName
-                }
-                dict["licenses"].append(tempTL)
+            tempTL = {
+                "url": "cmp.felk.cvut.cz/t-less/",
+                "id": imgID,
+                "name": imgName
+            }
+            dict["licenses"].append(tempTL)
 
-                tempTV = {
-                    "license": 2,
-                    "url": "cmp.felk.cvut.cz/t-less/",
-                    "file_name": imgName,
-                    "height": rows,
-                    "width": cols,
-                    "date_captured": dateT,
-                    "id": imgID
-                }
-                dict["images"].append(tempTV)
+            tempTV = {
+                "license": 2,
+                "url": "cmp.felk.cvut.cz/t-less/",
+                "file_name": imgName,
+                "height": rows,
+                "width": cols,
+                "date_captured": dateT,
+                "id": imgID
+            }
+            dict["images"].append(tempTV)
 
             gloCo += 1
 

@@ -235,10 +235,10 @@ def manipulate_depth(fn_gt, fn_depth, fn_part):
     partmask = np.where(mask, 255.0, 0.0)
     ###################################################
     # DON'T REMOVE, best normal map up to now !!! tested without lateral noise !!!
-    kernel = np.ones((5, 5))
-    #partmask = signal.medfilt2d(partmask, kernel_size=5)
-    partmask = cv2.morphologyEx(partmask, cv2.MORPH_OPEN, kernel)
+    kernel = np.ones((3, 3))
     partmask = signal.medfilt2d(partmask, kernel_size=3)
+    partmask = cv2.morphologyEx(partmask, cv2.MORPH_OPEN, kernel)
+    #partmask = signal.medfilt2d(partmask, kernel_size=3)
     ###################################################
     partmask = partmask.astype(np.uint8)
 
@@ -382,8 +382,8 @@ def get_normal(depth_refine, fx=-1, fy=-1, cx=-1, cy=-1, for_vis=True):
 ##########################
 if __name__ == "__main__":
 
-    root = '/home/sthalham/data/renderings/linemod_nBG/linemod_data/patches18062018'  # path to train samples
-    target = '/home/sthalham/data/prepro/lm_std_woBG/'
+    root = '/home/sthalham/data/renderings/linemod_BG/patches31052018/patches'  # path to train samples
+    target = '/home/sthalham/data/prepro/lm_std_m3o3/'
 
     now = datetime.datetime.now()
     dateT = str(now)

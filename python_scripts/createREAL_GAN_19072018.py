@@ -299,13 +299,30 @@ if __name__ == "__main__":
             imgNam = tempSS + imgNum + '.jpg'
             iname = str(imgNam)
 
-            fileName = '/home/sthalham/data/GAN_data/linemodRendered/test/' + imgNam
+            fileName = '/home/sthalham/data/prepro/p2p_fastSimplex/test/' + imgNam
             myFile = Path(fileName)
             if myFile.exists():
                 print('File exists, skip encoding')
             else:
-                # imgI = encodeImage(depImg)
-                imgI, depth_refine = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
+                # inpainting
+                scaleOri = np.amax(depImg)
+                inPaiMa = np.where(depImg == 0.0, 255, 0)
+                inPaiMa = inPaiMa.astype(np.uint8)
+                inPaiDia = 5.0
+                depth_refine = depImg.astype(np.float32)
+                depPaint = cv2.inpaint(depth_refine, inPaiMa, inPaiDia, cv2.INPAINT_NS)
+
+                depNorm = depPaint - np.amin(depPaint)
+                rangeD = np.amax(depNorm)
+                depNorm = np.divide(depNorm, rangeD)
+                depImg = np.multiply(depNorm, scaleOri)
+
+                #Scaling
+                sca = 255.0 / np.nanmax(depImg)
+                cross = np.multiply(depImg, sca)
+                imgI = cross.astype(np.uint8)
+
+                #imgI, depth_refine = get_normal(depImg, fx=fxkin, fy=fykin, cx=cxkin, cy=cykin, for_vis=False)
                 cv2.imwrite(fileName, imgI)
 
             gloCo += 1

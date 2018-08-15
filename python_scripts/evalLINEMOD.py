@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     #root = '/home/sthalham/data/T-less_Detectron/output/linemodArtiHAA07062018/test/coco_2014_val/generalized_rcnn/'  # path to train samples, depth + rgb
     root = "/home/sthalham/data/results/"
-    jsons = root + 'results_lm_std_op5m7_X_101_B64.json'
+    jsons = root + 'results_lm_augm_std_simplex_X_101_B64.json'
 
 
     json_data = open(jsons).read()
